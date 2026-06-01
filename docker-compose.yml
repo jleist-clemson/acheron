@@ -1,0 +1,118 @@
+# Distributed Event Processing Platform — local orchestration
+#
+# Brings up the full stack: FastAPI app + in-process worker, MongoDB,
+# Elasticsearch, and Redis. Every service is health-gated, so the app only
+# starts once its dependencies can actually accept connections.
+#
+# Usage:
+#   docker compose up --build                         # full stack
+#   docker compose up mongodb elasticsearch redis     # backing services only
+#                                                     # (use this until app code exists)
+#
+# Config is read from a local .env (see .env.example). All values below have
+# inline defaults so the stack also runs with no .env present.
+
+name: acheron
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      # --- datastore connections (service names resolve on the compose network) ---
+      MONGODB_URI: "mongodb://${MONGO_USER:-root}:${MONGO_PASSWORD:-example}@mongodb:27017/?authSource=admin"
+      MONGODB_DB: "${MONGODB_DB:-acheron}"
+      ELASTICSEARCH_URL: "http://elasticsearch:9200"
+      ELASTICSEARCH_INDEX: "${ELASTICSEARCH_INDEX:-events}"
+      REDIS_URL: "redis://redis:6379/0"
+      # --- application tunables (see .env.example for descriptions) ---
+      QUEUE_MAX_SIZE: "${QUEUE_MAX_SIZE:-10000}"
+      WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-4}"
+      WORKER_BATCH_SIZE: "${WORKER_BATCH_SIZE:-100}"
+      MAX_RETRIES: "${MAX_RETRIES:-5}"
+      RETRY_BASE_DELAY_SECONDS: "${RETRY_BASE_DELAY_SECONDS:-0.5}"
+      REALTIME_CACHE_TTL_SECONDS: "${REALTIME_CACHE_TTL_SECONDS:-15}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - acheron
+
+  mongodb:
+    image: mongo:7.0
+    restart: unless-stopped
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: "${MONGO_USER:-root}"
+      MONGO_INITDB_ROOT_PASSWORD: "${MONGO_PASSWORD:-example}"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      # `ping` is permitted pre-auth, so this works regardless of credentials.
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - acheron
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    restart: unless-stopped
+    ports:
+      - "${ES_PORT:-9200}:9200"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"      # LOCAL ONLY — never disable security in prod
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"    # cap heap so ES doesn't eat the whole host
+      bootstrap.memory_lock: "false"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      # Single-node clusters report "yellow" (no replica shards) — that's healthy here.
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s        # ES is slow to boot; give it room before marking unhealthy
+    networks:
+      - acheron
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    # Cache only — disable RDB snapshots and the AOF so nothing is persisted.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - acheron
+
+volumes:
+  mongo_data:
+  es_data:
+
+networks:
+  acheron:
+    driver: bridge
