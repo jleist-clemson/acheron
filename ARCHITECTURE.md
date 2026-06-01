@@ -158,6 +158,13 @@ notes.)_
   Equality→Sort→Range principle. Serves `/stats` (group by type over time
   buckets) and the common `type + date-range` filter on `/events`.
 - **`{ user_id: 1, timestamp: -1 }`** — per-user lookups, newest first.
+- **`{ timestamp: -1 }`** — backs the default `/events` listing (newest first)
+  when no `event_type`/`user_id` filter is supplied. Without it that query has
+  no usable index for the sort and falls back to an in-memory sort, which trips
+  Mongo's 32 MB sort limit on a large collection. The leading fields of the two
+  compound indexes above can't serve a sort-only-by-`timestamp` query, so this
+  single-field index is the minimum addition that keeps the unfiltered path
+  index-covered.
 - _(TODO: confirm against implementation)_ possibly **`{ source_url: 1 }`** if
   source filtering proves hot; otherwise left off.
 
