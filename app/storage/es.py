@@ -42,6 +42,9 @@ class ElasticsearchStore:
         self._url = url
         self._index = index
         self._client: Optional[AsyncElasticsearch] = None
+        # True once the explicit mapping has been confirmed/created. Lets us
+        # recover the mapping lazily if ES was unavailable at startup.
+        self._mapping_ready = False
 
     async def connect(self) -> None:
         """Open the async ES client and validate connectivity."""
@@ -70,14 +73,20 @@ class ElasticsearchStore:
         exists = await self._client.indices.exists(index=self._index)
         if exists:
             logger.info("ES index '%s' already exists", self._index)
+            self._mapping_ready = True
             return
         await self._client.indices.create(index=self._index, **_MAPPING)
         logger.info("ES index '%s' created", self._index)
+        self._mapping_ready = True
 
     async def bulk_index(self, events: list[EventDocument]) -> None:
         """Bulk-index a batch of events; raises on ES error (caller handles)."""
         if not events:
             return
+        # If ES was down at startup the explicit mapping was never created;
+        # establish it now so the index isn't auto-created with dynamic mapping.
+        if not self._mapping_ready:
+            await self.ensure_mapping()
         actions = [
             {
                 "_index": self._index,

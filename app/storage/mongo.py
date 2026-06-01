@@ -54,6 +54,12 @@ class MongoStore:
         await coll.create_index(
             [("user_id", 1), ("timestamp", -1)], background=True
         )
+        # Supports the default GET /events sort (timestamp desc) when no
+        # event_type/user_id filter is supplied. Without this the unfiltered
+        # query falls back to an in-memory sort and hits Mongo's 32MB sort
+        # limit on large collections. (Beyond ARCHITECTURE.md §6's compound
+        # indexes, which only cover the filtered query paths.)
+        await coll.create_index([("timestamp", -1)], background=True)
         logger.info("MongoDB indexes ensured")
 
     async def ping(self) -> bool:

@@ -44,9 +44,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await mongo.connect()
     await mongo.ensure_indexes()
 
+    # Elasticsearch is a derived mirror (ARCHITECTURE.md §4), so a down ES must
+    # NOT block startup — only degrade /search. Mongo (source of truth) and
+    # Redis still fail-fast above. The AsyncElasticsearch client is constructed
+    # lazily inside connect(), so it remains usable for retry once ES recovers;
+    # the explicit mapping is reattempted on the worker's first index call.
     es = ElasticsearchStore(settings.elasticsearch_url, settings.elasticsearch_index)
-    await es.connect()
-    await es.ensure_mapping()
+    try:
+        await es.connect()
+        await es.ensure_mapping()
+    except Exception as exc:
+        logger.warning(
+            "Elasticsearch unavailable at startup — continuing with search "
+            "degraded; mapping will be created on first successful index: %s",
+            exc,
+        )
 
     redis_cache = RedisCache(settings.redis_url)
     await redis_cache.connect()

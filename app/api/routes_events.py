@@ -6,16 +6,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pymongo.errors import PyMongoError
 
 from app.cache.redis_cache import RedisCache
 from app.ingestion.service import IngestionService
 from app.models import EventCreate
 from app.storage.es import ElasticsearchStore
 from app.storage.mongo import MongoStore
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -93,8 +97,16 @@ async def search_events(
     """
     if not q:
         return {"hits": [], "total": 0, "query": q}
-    # TODO: propagate errors as 502 Bad Gateway when ES is unavailable.
-    hits = await es.search(q, size=size)
+    # ES is a degradable, derived backend — surface any failure as 502 Bad
+    # Gateway rather than a 500, since Mongo (source of truth) is unaffected.
+    try:
+        hits = await es.search(q, size=size)
+    except Exception as exc:
+        logger.error("Elasticsearch search failed (%s): %s", type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Search backend unavailable",
+        )
     return {"hits": hits, "total": len(hits), "query": q}
 
 
@@ -110,15 +122,24 @@ async def list_events(
     mongo: MongoStore = Depends(_mongo),
 ) -> dict[str, Any]:
     """Return events from MongoDB filtered by type, user, source, and date range."""
-    events, total = await mongo.find_events(
-        event_type=event_type,
-        user_id=user_id,
-        source_url=source_url,
-        from_ts=from_ts,
-        to_ts=to_ts,
-        limit=limit,
-        offset=offset,
-    )
+    # Mongo is the source of truth for this read path; if it's unavailable the
+    # endpoint degrades to a clear 503 (ARCHITECTURE.md §7) rather than a 500.
+    try:
+        events, total = await mongo.find_events(
+            event_type=event_type,
+            user_id=user_id,
+            source_url=source_url,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            limit=limit,
+            offset=offset,
+        )
+    except PyMongoError as exc:
+        logger.error("Mongo query failed (%s): %s", type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Event store temporarily unavailable",
+        )
     return {"events": events, "total": total, "limit": limit, "offset": offset}
 
 
