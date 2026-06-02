@@ -23,7 +23,19 @@ def _worker(
     batch_size: int = 10,
     max_retries: int = 2,
 ) -> tuple[WorkerPool, DeadLetterQueue, AsyncMock, AsyncMock]:
-    """Construct a WorkerPool with mocked stores and zero backoff delay."""
+    """Construct a WorkerPool with mocked stores and zero backoff delay.
+
+    Args:
+        queue: Event queue to use; a fresh bounded queue by default.
+        dlq: Dead-letter queue to use; a fresh one by default.
+        mongo: Mock Mongo store; a fresh AsyncMock by default.
+        es: Mock ES store; a fresh AsyncMock by default.
+        batch_size: Worker batch size.
+        max_retries: Maximum Mongo write retries before routing to the DLQ.
+
+    Returns:
+        A ``(pool, dlq, mongo, es)`` tuple wiring the pool to its (mock) deps.
+    """
     queue = queue or EventQueue(max_size=100)
     dlq = dlq or DeadLetterQueue()
     mongo = mongo or AsyncMock()

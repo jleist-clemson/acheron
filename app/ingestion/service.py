@@ -16,10 +16,18 @@ class IngestionService:
         self._queue = queue
 
     def ingest(self, event: EventCreate) -> EventDocument:
-        """Assign a server-side event_id and received_at, then enqueue.
+        """Assign server-side identifiers and enqueue the event.
 
-        Raises asyncio.QueueFull when the queue is at capacity — callers
-        should translate this into HTTP 429.
+        Args:
+            event: The validated, client-supplied event.
+
+        Returns:
+            The stored event, with its server-assigned ``event_id`` and
+            ``received_at`` populated.
+
+        Raises:
+            asyncio.QueueFull: If the queue is at capacity; callers should
+                translate this into HTTP 429.
         """
         doc = EventDocument(
             event_id=str(uuid.uuid4()),

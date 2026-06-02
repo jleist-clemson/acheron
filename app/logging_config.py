@@ -6,7 +6,11 @@ import sys
 
 
 def configure_logging(level: str = "INFO") -> None:
-    """Configure the root logger with a structured format."""
+    """Configure the root logger with a structured format.
+
+    Args:
+        level: Log level name (e.g. ``"INFO"``); case-insensitive.
+    """
     logging.basicConfig(
         level=level.upper(),
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",

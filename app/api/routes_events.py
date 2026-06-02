@@ -60,10 +60,16 @@ async def get_realtime_stats(
     mongo: MongoStore = Depends(_mongo),
     cache: RedisCache = Depends(_cache),
 ) -> dict[str, Any]:
-    """Per-event_type counts over a recent window, served cache-aside via Redis.
+    """Return per-``event_type`` counts over a recent window, served cache-aside.
 
-    The cached entry expires after REALTIME_CACHE_TTL_SECONDS; a Redis outage
+    The cached entry expires after ``REALTIME_CACHE_TTL_SECONDS``; a Redis outage
     degrades transparently to recomputing from Mongo (ARCHITECTURE.md §9).
+
+    Returns:
+        ``{"data": <summary>, "cached": <bool>}``.
+
+    Raises:
+        HTTPException: 503 if the Mongo aggregation is unavailable.
     """
     settings = request.app.state.settings
 
@@ -96,8 +102,19 @@ async def get_stats(
     ),
     mongo: MongoStore = Depends(_mongo),
 ) -> dict[str, Any]:
-    """Aggregate event counts per event_type, optionally over a date range and
-    bucketed by a time interval (ARCHITECTURE.md §4/§6)."""
+    """Aggregate event counts per ``event_type`` (ARCHITECTURE.md §4/§6).
+
+    Args:
+        from_ts: Inclusive lower bound on ``timestamp`` (``from`` query param).
+        to_ts: Inclusive upper bound on ``timestamp`` (``to`` query param).
+        interval: Optional time-bucket unit: ``minute``, ``hour``, or ``day``.
+
+    Returns:
+        ``{"data": [...], "total": <int>, "interval": <str|None>}``.
+
+    Raises:
+        HTTPException: 503 if the Mongo aggregation is unavailable.
+    """
     try:
         data = await mongo.aggregate_counts(
             from_ts=from_ts, to_ts=to_ts, interval=interval
@@ -121,9 +138,20 @@ async def search_events(
     size: int = Query(20, ge=1, le=200),
     es: ElasticsearchStore = Depends(_es),
 ) -> dict[str, Any]:
-    """Full-text search across event fields using Elasticsearch.
+    """Run a full-text search across event fields using Elasticsearch.
 
-    # TODO: add filters (event_type, date range) and pagination.
+    Args:
+        q: The free-text query string; an empty query returns no hits.
+        size: Maximum number of hits to return.
+
+    Returns:
+        ``{"hits": [...], "total": <int>, "query": <str|None>}``.
+
+    Raises:
+        HTTPException: 502 if the search backend is unavailable.
+
+    Note:
+        TODO: add filters (event_type, date range) and pagination.
     """
     if not q:
         return {"hits": [], "total": 0, "query": q}
@@ -151,7 +179,23 @@ async def list_events(
     offset: int = Query(0, ge=0),
     mongo: MongoStore = Depends(_mongo),
 ) -> dict[str, Any]:
-    """Return events from MongoDB filtered by type, user, source, and date range."""
+    """List events from MongoDB, filtered and paginated.
+
+    Args:
+        event_type: Restrict to this event type, if given.
+        user_id: Restrict to this user, if given.
+        source_url: Restrict to this source URL, if given.
+        from_ts: Inclusive lower bound on ``timestamp`` (``from`` query param).
+        to_ts: Inclusive upper bound on ``timestamp`` (``to`` query param).
+        limit: Maximum number of events to return.
+        offset: Number of leading events to skip.
+
+    Returns:
+        ``{"events": [...], "total": <int>, "limit": <int>, "offset": <int>}``.
+
+    Raises:
+        HTTPException: 503 if the event store is unavailable.
+    """
     # Mongo is the source of truth for this read path; if it's unavailable the
     # endpoint degrades to a clear 503 (ARCHITECTURE.md §7) rather than a 500.
     try:
@@ -178,9 +222,16 @@ async def create_event(
     event: EventCreate,
     service: IngestionService = Depends(_ingestion),
 ) -> dict[str, Any]:
-    """Validate and enqueue an event; returns immediately with the assigned event_id.
+    """Validate and enqueue an event for asynchronous processing.
 
-    Returns 429 if the in-process queue is full (backpressure signal).
+    Args:
+        event: The client-supplied event payload.
+
+    Returns:
+        ``{"event_id": <str>, "received_at": <iso8601>}`` with HTTP 202.
+
+    Raises:
+        HTTPException: 429 if the in-process queue is full (backpressure signal).
     """
     try:
         doc = service.ingest(event)

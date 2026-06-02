@@ -9,32 +9,50 @@ from app.models import EventDocument
 class EventQueue:
     """Thin wrapper around asyncio.Queue that surfaces backpressure clearly.
 
-    Producers call put_nowait(); asyncio.QueueFull is the backpressure signal
-    that the API translates into HTTP 429.  Workers call get() / task_done() /
-    join() for the standard consume-and-ack pattern.
+    Producers call ``put_nowait()``; ``asyncio.QueueFull`` is the backpressure
+    signal that the API translates into HTTP 429. Workers call ``get()`` /
+    ``task_done()`` / ``join()`` for the standard consume-and-ack pattern.
     """
 
     def __init__(self, max_size: int) -> None:
         self._q: asyncio.Queue[EventDocument] = asyncio.Queue(maxsize=max_size)
 
     def put_nowait(self, event: EventDocument) -> None:
-        """Enqueue without blocking; raises asyncio.QueueFull when at capacity."""
+        """Enqueue an event without blocking.
+
+        Args:
+            event: The event to enqueue.
+
+        Raises:
+            asyncio.QueueFull: If the queue is at capacity.
+        """
         self._q.put_nowait(event)
 
     async def get(self) -> EventDocument:
-        """Block until an item is available and return it."""
+        """Remove and return the next event, waiting if the queue is empty.
+
+        Returns:
+            The next event in FIFO order.
+        """
         return await self._q.get()
 
     def get_nowait(self) -> EventDocument:
-        """Non-blocking get; raises asyncio.QueueEmpty when empty."""
+        """Remove and return the next event without blocking.
+
+        Returns:
+            The next event in FIFO order.
+
+        Raises:
+            asyncio.QueueEmpty: If the queue is empty.
+        """
         return self._q.get_nowait()
 
     def task_done(self) -> None:
-        """Signal that a previously get()'d item has been fully processed."""
+        """Signal that a previously ``get()``'d item has been fully processed."""
         self._q.task_done()
 
     async def join(self) -> None:
-        """Block until every enqueued item has had task_done() called."""
+        """Block until every enqueued item has had ``task_done()`` called."""
         await self._q.join()
 
     @property

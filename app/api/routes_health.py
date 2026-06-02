@@ -9,13 +9,25 @@ router = APIRouter(tags=["health"])
 
 @router.get("/health", status_code=200)
 async def health() -> dict:
-    """Liveness probe — returns 200 if the process is up."""
+    """Liveness probe.
+
+    Returns:
+        A status payload; always HTTP 200 while the process is up.
+    """
     return {"status": "ok"}
 
 
 @router.get("/health/ready")
 async def health_ready(request: Request) -> JSONResponse:
-    """Readiness probe — pings MongoDB, Elasticsearch, and Redis."""
+    """Readiness probe that pings MongoDB, Elasticsearch, and Redis.
+
+    Args:
+        request: The incoming request; the stores are read from ``app.state``.
+
+    Returns:
+        HTTP 200 with per-store check results when all are reachable, otherwise
+        HTTP 503 with the same shape.
+    """
     mongo = request.app.state.mongo
     es = request.app.state.es
     cache = request.app.state.redis_cache

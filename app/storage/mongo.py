@@ -18,8 +18,9 @@ _COLLECTION = "events"
 class MongoStore:
     """Wraps Motor for event persistence and filtered retrieval.
 
-    event_id is stored as MongoDB _id to make inserts idempotent — retrying
-    a batch that partially succeeded will skip duplicates rather than erroring.
+    ``event_id`` is stored as MongoDB ``_id`` to make inserts idempotent —
+    retrying a batch that partially succeeded skips duplicates rather than
+    erroring.
     """
 
     def __init__(self, uri: str, db_name: str) -> None:
@@ -28,7 +29,7 @@ class MongoStore:
         self._client: Optional[AsyncIOMotorClient] = None
 
     async def connect(self) -> None:
-        """Open the Motor connection pool and validate with a ping."""
+        """Open the Motor connection pool and validate it with a ping."""
         self._client = AsyncIOMotorClient(self._uri)
         await self._client.admin.command("ping")
         logger.info("MongoDB connected (db=%s)", self._db_name)
@@ -46,7 +47,7 @@ class MongoStore:
         return self._client[self._db_name][_COLLECTION]
 
     async def ensure_indexes(self) -> None:
-        """Idempotently create indexes described in ARCHITECTURE.md §6."""
+        """Idempotently create the indexes described in ARCHITECTURE.md §6."""
         coll = self._collection
         await coll.create_index(
             [("event_type", 1), ("timestamp", 1)], background=True
@@ -63,7 +64,11 @@ class MongoStore:
         logger.info("MongoDB indexes ensured")
 
     async def ping(self) -> bool:
-        """Return True if MongoDB is reachable."""
+        """Check MongoDB connectivity.
+
+        Returns:
+            True if the server responds to a ping, False otherwise.
+        """
         try:
             await self._client.admin.command("ping")
             return True
@@ -71,7 +76,11 @@ class MongoStore:
             return False
 
     async def bulk_write(self, events: list[EventDocument]) -> None:
-        """Insert a batch of events; duplicate event_ids are silently skipped."""
+        """Insert a batch of events, silently skipping duplicate ``event_id``s.
+
+        Args:
+            events: The events to insert. An empty list is a no-op.
+        """
         if not events:
             return
         docs = [_to_doc(e) for e in events]
@@ -92,7 +101,21 @@ class MongoStore:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Return (events, total_count) matching the given filters."""
+        """Query events by filter, newest first, with pagination.
+
+        Args:
+            event_type: Restrict to this event type, if given.
+            user_id: Restrict to this user, if given.
+            source_url: Restrict to this source URL, if given.
+            from_ts: Inclusive lower bound on ``timestamp``, if given.
+            to_ts: Inclusive upper bound on ``timestamp``, if given.
+            limit: Maximum number of events to return.
+            offset: Number of leading events to skip.
+
+        Returns:
+            A ``(events, total_count)`` tuple: the page of matching documents
+            and the total number matching the filter (ignoring pagination).
+        """
         filt: dict[str, Any] = {}
         if event_type:
             filt["event_type"] = event_type
@@ -121,12 +144,22 @@ class MongoStore:
         to_ts: Optional[datetime] = None,
         interval: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """Count events grouped by event_type over an optional date range.
+        """Count events grouped by ``event_type`` over an optional date range.
 
-        When *interval* ("minute"|"hour"|"day") is given, results are further
-        bucketed by a truncated timestamp — the "count by event_type × time
-        bucket" pattern from ARCHITECTURE.md §4/§6.  The {event_type, timestamp}
-        compound index covers the group scan.
+        When *interval* is given, results are further bucketed by a truncated
+        timestamp — the "count by event_type × time bucket" pattern from
+        ARCHITECTURE.md §4/§6. The ``{event_type, timestamp}`` compound index
+        covers the group scan.
+
+        Args:
+            from_ts: Inclusive lower bound on ``timestamp``, if given.
+            to_ts: Inclusive upper bound on ``timestamp``, if given.
+            interval: Time-bucket unit, one of ``"minute"``, ``"hour"`` or
+                ``"day"``; when omitted, counts are not bucketed by time.
+
+        Returns:
+            One row per group as ``{"event_type", "count"}``, with an added
+            ``"bucket"`` field when *interval* is given.
         """
         pipeline: list[dict[str, Any]] = []
         ts_match = _timestamp_clause(from_ts, to_ts)
@@ -166,10 +199,19 @@ class MongoStore:
         return await self._collection.aggregate(pipeline).to_list(length=None)
 
     async def recent_counts_by_type(self, window_seconds: int) -> dict[str, Any]:
-        """Per-event_type counts over the most recent *window_seconds*.
+        """Count events per ``event_type`` over the most recent window.
 
-        Backs the cache-aside /events/stats/realtime summary (ARCHITECTURE.md §9).
-        The {timestamp: -1} index serves the recency match.
+        Backs the cache-aside ``/events/stats/realtime`` summary
+        (ARCHITECTURE.md §9). The ``{timestamp: -1}`` index serves the
+        recency match.
+
+        Args:
+            window_seconds: Size of the look-back window, in seconds.
+
+        Returns:
+            A summary dict with ``window_seconds``, ``since`` (ISO-8601),
+            ``total``, and ``by_type`` (a list of ``{"event_type", "count"}``
+            rows).
         """
         since = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
         pipeline: list[dict[str, Any]] = [
@@ -190,7 +232,15 @@ class MongoStore:
 def _timestamp_clause(
     from_ts: Optional[datetime], to_ts: Optional[datetime]
 ) -> Optional[dict[str, Any]]:
-    """Build a Mongo range clause for the timestamp field, or None if unbounded."""
+    """Build a Mongo range clause for the ``timestamp`` field.
+
+    Args:
+        from_ts: Inclusive lower bound, if given.
+        to_ts: Inclusive upper bound, if given.
+
+    Returns:
+        A ``{"$gte"/"$lte": ...}`` clause, or None when both bounds are absent.
+    """
     clause: dict[str, Any] = {}
     if from_ts:
         clause["$gte"] = from_ts
@@ -200,7 +250,15 @@ def _timestamp_clause(
 
 
 def _to_doc(event: EventDocument) -> dict[str, Any]:
-    """Serialize EventDocument to a Motor-ready dict using event_id as _id."""
+    """Serialise an event to a Motor-ready dict keyed by ``event_id``.
+
+    Args:
+        event: The event to serialise.
+
+    Returns:
+        A BSON-ready dict whose ``_id`` equals the event's ``event_id``, which
+        makes inserts idempotent (a duplicate ``_id`` is skipped).
+    """
     d = event.model_dump()  # native Python types; Motor handles datetime → BSON Date
     d["_id"] = d["event_id"]  # idempotent inserts — duplicate _id = skip
     return d

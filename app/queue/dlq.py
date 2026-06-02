@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DLQEntry:
+    """A single dead-lettered event with its failure context."""
+
     event: Any
     reason: str
     failed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -27,7 +29,12 @@ class DeadLetterQueue:
         self._entries: list[DLQEntry] = []
 
     def push(self, event: Any, reason: str) -> None:
-        """Record a permanently-failed event and log it as an error."""
+        """Record a permanently-failed event and log it as an error.
+
+        Args:
+            event: The event that exhausted its retries.
+            reason: Human-readable description of the failure.
+        """
         entry = DLQEntry(event=event, reason=reason)
         self._entries.append(entry)
         logger.error(
@@ -41,6 +48,11 @@ class DeadLetterQueue:
         return len(self._entries)
 
     def drain(self) -> list[DLQEntry]:
-        """Return and clear all DLQ entries (useful for introspection/export)."""
+        """Return all DLQ entries and clear the queue.
+
+        Returns:
+            The drained entries, in insertion order. Useful for
+            introspection or export.
+        """
         entries, self._entries = self._entries, []
         return entries

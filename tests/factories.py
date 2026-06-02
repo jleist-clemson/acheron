@@ -13,7 +13,16 @@ def make_event(
     user_id: str = "u1",
     **overrides: Any,
 ) -> EventDocument:
-    """Build a fully-formed EventDocument with sensible defaults for tests."""
+    """Build a fully-formed EventDocument with sensible defaults for tests.
+
+    Args:
+        event_type: The event type to set.
+        user_id: The user id to set.
+        **overrides: Field overrides applied on top of the defaults.
+
+    Returns:
+        A complete EventDocument suitable for use in tests.
+    """
     now = datetime.now(timezone.utc)
     fields: dict[str, Any] = {
         "event_id": str(uuid.uuid4()),

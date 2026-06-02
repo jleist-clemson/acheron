@@ -62,7 +62,11 @@ class ElasticsearchStore:
             logger.info("Elasticsearch connection closed")
 
     async def ping(self) -> bool:
-        """Return True if Elasticsearch is reachable."""
+        """Check Elasticsearch connectivity.
+
+        Returns:
+            True if the cluster responds, False otherwise.
+        """
         try:
             return await self._client.ping()
         except Exception:
@@ -80,7 +84,16 @@ class ElasticsearchStore:
         self._mapping_ready = True
 
     async def bulk_index(self, events: list[EventDocument]) -> None:
-        """Bulk-index a batch of events; raises on ES error (caller handles)."""
+        """Bulk-index a batch of events, creating the mapping first if needed.
+
+        Args:
+            events: The events to index. An empty list is a no-op.
+
+        Raises:
+            Exception: On any transport or bulk-indexing failure. ES is a
+                best-effort mirror, so the worker catches and logs these
+                rather than failing the (already-committed) Mongo write.
+        """
         if not events:
             return
         # If ES was down at startup the explicit mapping was never created;
@@ -99,9 +112,17 @@ class ElasticsearchStore:
         logger.debug("ES indexed %d events", len(events))
 
     async def search(self, query: str, size: int = 20) -> list[dict[str, Any]]:
-        """Full-text search across event fields.
+        """Run a full-text search across event fields.
 
-        # TODO: expand query DSL (filters, aggregations, relevance tuning)
+        Args:
+            query: The free-text query string.
+            size: Maximum number of hits to return.
+
+        Returns:
+            The matching documents' ``_source`` bodies.
+
+        Note:
+            TODO: expand the query DSL (filters, aggregations, relevance tuning).
         """
         resp = await self._client.search(
             index=self._index,

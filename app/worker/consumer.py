@@ -53,7 +53,11 @@ class WorkerPool:
         self._tasks: list[asyncio.Task] = []
 
     async def start(self, concurrency: int) -> None:
-        """Spawn *concurrency* consumer tasks."""
+        """Spawn the consumer tasks.
+
+        Args:
+            concurrency: Number of concurrent consumer tasks to run.
+        """
         self._tasks = [
             asyncio.create_task(self._consume(), name=f"worker-{i}")
             for i in range(concurrency)
@@ -63,8 +67,12 @@ class WorkerPool:
     async def stop(self, drain_timeout: float = 30.0) -> None:
         """Signal stop, drain the in-flight queue, then cancel remaining tasks.
 
-        The drain honours *drain_timeout* seconds so a stuck batch does not
-        block a deploy indefinitely.  Any un-drained events are logged as lost.
+        The drain honours *drain_timeout* so a stuck batch does not block a
+        deploy indefinitely; any un-drained events are logged as lost.
+
+        Args:
+            drain_timeout: Seconds to wait for the queue to drain before
+                cancelling the consumer tasks.
         """
         logger.info("Worker pool: draining (timeout=%.0fs)…", drain_timeout)
         self._stop_event.set()
@@ -114,7 +122,14 @@ class WorkerPool:
                     self._queue.task_done()
 
     async def _process_batch(self, batch: list[EventDocument]) -> None:
-        """Write to Mongo with retry/backoff; then best-effort index to ES."""
+        """Write a batch to Mongo with retry/backoff, then best-effort index to ES.
+
+        Args:
+            batch: The events to persist. If the Mongo write exhausts its
+                retries, every event is routed to the DLQ and ES indexing is
+                skipped; an ES failure after a successful Mongo write is logged
+                and swallowed (ES is a derived mirror).
+        """
         # --- Mongo write: source of truth; retry until exhausted ---
         last_exc: Exception | None = None
         for attempt in range(self._max_retries + 1):

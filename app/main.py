@@ -33,7 +33,15 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Start all background services on startup; drain and close on shutdown."""
+    """Start background services on startup; drain and close them on shutdown.
+
+    Args:
+        app: The FastAPI application; initialised components are attached to
+            ``app.state`` for route handlers to use.
+
+    Yields:
+        Control to the running application, between startup and shutdown.
+    """
     # ------------------------------------------------------------------ startup
     logger.info("Starting Acheron — Distributed Event Processing Platform")
 
