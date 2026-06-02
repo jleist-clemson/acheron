@@ -107,4 +107,7 @@ Key contributions:
 - Caught the `model_dump()` vs `model_dump(mode="json")` distinction (native datetime for Motor vs ISO strings for ES).
 - Suggested the `event_id`-as-MongoDB-`_id` pattern for idempotent retries.
 
-Human review focused on: architectural trade-offs, failure-mode accuracy against ARCHITECTURE.md, and aligning env var names exactly with `.env.example`.
+Human review focused on:
+- Architectural trade-offs, failure-mode accuracy against ARCHITECTURE.md, and aligning env var names exactly with `.env.example`.
+- Scrutinizing the **Prerequisites**: questioned the "Docker Desktop" requirement and confirmed any Docker-compatible engine + Compose v2 (e.g. Rancher Desktop with the Moby backend) works, broadening the wording accordingly.
+- Deciding to adopt **Google-style docstring syntax** across the codebase, codified and enforced via `ruff.toml` (pydocstyle, `google` convention).
