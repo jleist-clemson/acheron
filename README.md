@@ -69,19 +69,28 @@ Interactive docs: `http://localhost:8000/docs`
 
 ## Testing approach
 
-*(Placeholder — tests live in `tests/`)*
-
-Planned layers:
-
-- **Unit tests** — `IngestionService`, `WorkerPool` retry/backoff logic, `EventQueue` backpressure (mock stores).
-- **Integration tests** — spin up real MongoDB + Redis via `pytest-docker` or `testcontainers`; assert end-to-end POST → GET round-trip.
-- **Contract tests** — validate Elasticsearch mapping against the ES 8.x API.
-
-Run (once tests exist):
+Tests live in `tests/` and use `pytest` + `pytest-asyncio`. Install the dev
+dependencies and run them with no backing services required (stores are mocked):
 
 ```bash
+pip install -r requirements-dev.txt
 pytest -v
 ```
+
+**Implemented (unit, fully mocked):**
+
+- **Backpressure** (`test_backpressure.py`) — `EventQueue` raises `QueueFull` at
+  capacity instead of blocking; `IngestionService` assigns server-side fields and
+  propagates that `QueueFull` so the API can return 429.
+- **Worker** (`test_worker.py`) — Mongo-then-ES write order; retry with backoff
+  then success; retries exhausted → events routed to the DLQ and ES skipped;
+  ES failure is best-effort (no DLQ, no raise); graceful drain on `stop()`.
+
+**Planned (not yet implemented):**
+
+- **Integration** — spin up real MongoDB + Redis via `testcontainers`; assert the
+  end-to-end POST → worker → GET round-trip and the stats aggregations.
+- **Contract** — validate the Elasticsearch mapping against the ES 8.x API.
 
 ---
 
