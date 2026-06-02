@@ -74,7 +74,7 @@ async def get_realtime_stats(
     settings = request.app.state.settings
 
     async def compute() -> dict[str, Any]:
-        return await mongo.recent_counts_by_type(REALTIME_WINDOW_SECONDS)
+        return await mongo.aggregate_recent_counts(REALTIME_WINDOW_SECONDS)
 
     try:
         data, hit = await cache.get_or_set(

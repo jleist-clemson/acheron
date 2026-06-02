@@ -204,7 +204,7 @@ class MongoStore:
 
         return await self._collection.aggregate(pipeline).to_list(length=None)
 
-    async def recent_counts_by_type(self, window_seconds: int) -> dict[str, Any]:
+    async def aggregate_recent_counts(self, window_seconds: int) -> dict[str, Any]:
         """Count events per ``event_type`` over the most recent window.
 
         Backs the cache-aside ``/events/stats/realtime`` summary
