@@ -57,9 +57,9 @@ uvicorn app.main:app --reload
 |--------|------|-------------|
 | `POST` | `/events` | Ingest an event → 202 with `event_id` |
 | `GET` | `/events` | Filter by `event_type`, `user_id`, `source_url`, `from`, `to` with `limit`/`offset` |
-| `GET` | `/events/stats` | Event counts grouped by type *(stub — TODO)* |
-| `GET` | `/events/search` | Full-text search via Elasticsearch — pass `?q=` *(stub — TODO)* |
-| `GET` | `/events/stats/realtime` | Redis-cached realtime summary *(stub — TODO)* |
+| `GET` | `/events/stats` | Event counts grouped by `event_type`; optional `from`/`to` range and `interval=minute\|hour\|day` time-bucketing |
+| `GET` | `/events/stats/realtime` | Per-type counts over a recent window, cache-aside via Redis (degrades to Mongo if Redis is down) |
+| `GET` | `/events/search` | Full-text search via Elasticsearch — pass `?q=` *(filters/pagination still TODO)* |
 | `GET` | `/health` | Liveness probe |
 | `GET` | `/health/ready` | Readiness probe — pings all three stores |
 

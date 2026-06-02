@@ -5,7 +5,6 @@ All business logic lives in services/stores; routes only translate HTTP ↔ doma
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import datetime
 from typing import Any, Optional
@@ -20,6 +19,11 @@ from app.storage.es import ElasticsearchStore
 from app.storage.mongo import MongoStore
 
 logger = logging.getLogger(__name__)
+
+# Window the /events/stats/realtime summary covers. Fixed for now (no env knob
+# in .env.example); REALTIME_CACHE_TTL_SECONDS controls cache freshness, not
+# this data window. Promote to config if it needs to be tunable per deploy.
+REALTIME_WINDOW_SECONDS = 300
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -56,33 +60,59 @@ async def get_realtime_stats(
     mongo: MongoStore = Depends(_mongo),
     cache: RedisCache = Depends(_cache),
 ) -> dict[str, Any]:
-    """Return a cached summary of recent event counts backed by Redis.
+    """Per-event_type counts over a recent window, served cache-aside via Redis.
 
-    Cache key expires after REALTIME_CACHE_TTL_SECONDS.
-    # TODO: replace the stub aggregation with a real Mongo pipeline.
+    The cached entry expires after REALTIME_CACHE_TTL_SECONDS; a Redis outage
+    degrades transparently to recomputing from Mongo (ARCHITECTURE.md §9).
     """
     settings = request.app.state.settings
-    cache_key = "events:stats:realtime"
 
-    cached = await cache.get(cache_key)
-    if cached is not None:
-        return {"data": json.loads(cached), "cached": True}
+    async def compute() -> dict[str, Any]:
+        return await mongo.recent_counts_by_type(REALTIME_WINDOW_SECONDS)
 
-    # TODO: run Mongo $group aggregation over the last N seconds.
-    result: list[dict] = []
-    await cache.set(cache_key, json.dumps(result), ttl=settings.realtime_cache_ttl_seconds)
-    return {"data": result, "cached": False}
+    try:
+        data, hit = await cache.get_or_set(
+            "events:stats:realtime",
+            ttl=settings.realtime_cache_ttl_seconds,
+            factory=compute,
+        )
+    except PyMongoError as exc:
+        logger.error("Realtime stats aggregation failed (%s): %s", type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Event store temporarily unavailable",
+        )
+    return {"data": data, "cached": hit}
 
 
 @router.get("/stats", summary="Event counts grouped by type")
 async def get_stats(
+    from_ts: Optional[datetime] = Query(None, alias="from"),
+    to_ts: Optional[datetime] = Query(None, alias="to"),
+    interval: Optional[str] = Query(
+        None,
+        pattern="^(minute|hour|day)$",
+        description="Optionally bucket counts by time: minute | hour | day",
+    ),
     mongo: MongoStore = Depends(_mongo),
 ) -> dict[str, Any]:
-    """Aggregate event counts per event_type over all time.
-
-    # TODO: implement Mongo $group aggregation pipeline.
-    """
-    return {"data": [], "total": 0}
+    """Aggregate event counts per event_type, optionally over a date range and
+    bucketed by a time interval (ARCHITECTURE.md §4/§6)."""
+    try:
+        data = await mongo.aggregate_counts(
+            from_ts=from_ts, to_ts=to_ts, interval=interval
+        )
+    except PyMongoError as exc:
+        logger.error("Stats aggregation failed (%s): %s", type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Event store temporarily unavailable",
+        )
+    return {
+        "data": data,
+        "total": sum(row["count"] for row in data),
+        "interval": interval,
+    }
 
 
 @router.get("/search", summary="Full-text search via Elasticsearch")

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
@@ -100,13 +100,9 @@ class MongoStore:
             filt["user_id"] = user_id
         if source_url:
             filt["source_url"] = source_url
-        if from_ts or to_ts:
-            ts_range: dict[str, Any] = {}
-            if from_ts:
-                ts_range["$gte"] = from_ts
-            if to_ts:
-                ts_range["$lte"] = to_ts
-            filt["timestamp"] = ts_range
+        ts_clause = _timestamp_clause(from_ts, to_ts)
+        if ts_clause:
+            filt["timestamp"] = ts_clause
 
         total = await self._collection.count_documents(filt)
         cursor = (
@@ -117,6 +113,90 @@ class MongoStore:
         )
         docs = await cursor.to_list(length=limit)
         return docs, total
+
+    async def aggregate_counts(
+        self,
+        *,
+        from_ts: Optional[datetime] = None,
+        to_ts: Optional[datetime] = None,
+        interval: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Count events grouped by event_type over an optional date range.
+
+        When *interval* ("minute"|"hour"|"day") is given, results are further
+        bucketed by a truncated timestamp — the "count by event_type × time
+        bucket" pattern from ARCHITECTURE.md §4/§6.  The {event_type, timestamp}
+        compound index covers the group scan.
+        """
+        pipeline: list[dict[str, Any]] = []
+        ts_match = _timestamp_clause(from_ts, to_ts)
+        if ts_match:
+            pipeline.append({"$match": {"timestamp": ts_match}})
+
+        if interval:
+            pipeline += [
+                {
+                    "$group": {
+                        "_id": {
+                            "event_type": "$event_type",
+                            "bucket": {
+                                "$dateTrunc": {"date": "$timestamp", "unit": interval}
+                            },
+                        },
+                        "count": {"$sum": 1},
+                    }
+                },
+                {"$sort": {"_id.bucket": 1, "_id.event_type": 1}},
+                {
+                    "$project": {
+                        "_id": 0,
+                        "event_type": "$_id.event_type",
+                        "bucket": "$_id.bucket",
+                        "count": 1,
+                    }
+                },
+            ]
+        else:
+            pipeline += [
+                {"$group": {"_id": "$event_type", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1, "_id": 1}},
+                {"$project": {"_id": 0, "event_type": "$_id", "count": 1}},
+            ]
+
+        return await self._collection.aggregate(pipeline).to_list(length=None)
+
+    async def recent_counts_by_type(self, window_seconds: int) -> dict[str, Any]:
+        """Per-event_type counts over the most recent *window_seconds*.
+
+        Backs the cache-aside /events/stats/realtime summary (ARCHITECTURE.md §9).
+        The {timestamp: -1} index serves the recency match.
+        """
+        since = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
+        pipeline: list[dict[str, Any]] = [
+            {"$match": {"timestamp": {"$gte": since}}},
+            {"$group": {"_id": "$event_type", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1, "_id": 1}},
+            {"$project": {"_id": 0, "event_type": "$_id", "count": 1}},
+        ]
+        by_type = await self._collection.aggregate(pipeline).to_list(length=None)
+        return {
+            "window_seconds": window_seconds,
+            "since": since.isoformat(),
+            "total": sum(row["count"] for row in by_type),
+            "by_type": by_type,
+        }
+
+
+def _timestamp_clause(
+    from_ts: Optional[datetime], to_ts: Optional[datetime]
+) -> Optional[dict[str, Any]]:
+    """Build a Mongo range clause for the timestamp field, or None if unbounded."""
+    clause: dict[str, Any] = {}
+    if from_ts:
+        clause["$gte"] = from_ts
+    if to_ts:
+        clause["$lte"] = to_ts
+    return clause or None
 
 
 def _to_doc(event: EventDocument) -> dict[str, Any]:
