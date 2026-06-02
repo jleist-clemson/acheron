@@ -10,7 +10,10 @@ Events flow: `POST /events` → bounded in-process queue → async worker → Mo
 
 ### Prerequisites
 
-- Docker Desktop (or Docker Engine + Compose v2)
+- Any Docker-compatible container engine plus the Compose v2 CLI — e.g. Docker
+  Desktop, Docker Engine, Rancher Desktop (with the `dockerd`/Moby backend),
+  Colima, or OrbStack. The commands below use `docker compose`; with Rancher
+  Desktop's containerd backend, use `nerdctl compose` instead.
 - Python 3.12+ (only needed for running outside Docker)
 
 ### Start the full stack
