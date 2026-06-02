@@ -26,6 +26,7 @@ class DeadLetterQueue:
     """Simple in-memory DLQ. Thread-safe within a single asyncio event loop."""
 
     def __init__(self) -> None:
+        """Initialise an empty dead-letter queue."""
         self._entries: list[DLQEntry] = []
 
     def push(self, event: Any, reason: str) -> None:
@@ -45,6 +46,7 @@ class DeadLetterQueue:
 
     @property
     def size(self) -> int:
+        """Number of events currently held in the dead-letter queue."""
         return len(self._entries)
 
     def drain(self) -> list[DLQEntry]:

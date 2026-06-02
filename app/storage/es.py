@@ -39,6 +39,12 @@ class ElasticsearchStore:
     """Async ES client for indexing events and serving full-text search."""
 
     def __init__(self, url: str, index: str) -> None:
+        """Initialise the store; no connection is opened until ``connect()``.
+
+        Args:
+            url: Elasticsearch base URL.
+            index: Name of the events index.
+        """
         self._url = url
         self._index = index
         self._client: Optional[AsyncElasticsearch] = None

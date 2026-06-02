@@ -14,6 +14,11 @@ class RedisCache:
     """Thin async wrapper around redis-py for TTL-based cache-aside reads/writes."""
 
     def __init__(self, url: str) -> None:
+        """Initialise the cache; no connection is opened until ``connect()``.
+
+        Args:
+            url: Redis connection URL.
+        """
         self._url = url
         self._redis: Optional[Redis] = None
 

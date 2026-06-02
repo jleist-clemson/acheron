@@ -108,6 +108,7 @@ async def get_stats(
         from_ts: Inclusive lower bound on ``timestamp`` (``from`` query param).
         to_ts: Inclusive upper bound on ``timestamp`` (``to`` query param).
         interval: Optional time-bucket unit: ``minute``, ``hour``, or ``day``.
+        mongo: MongoDB store (injected).
 
     Returns:
         ``{"data": [...], "total": <int>, "interval": <str|None>}``.
@@ -143,6 +144,7 @@ async def search_events(
     Args:
         q: The free-text query string; an empty query returns no hits.
         size: Maximum number of hits to return.
+        es: Elasticsearch store (injected).
 
     Returns:
         ``{"hits": [...], "total": <int>, "query": <str|None>}``.
@@ -189,6 +191,7 @@ async def list_events(
         to_ts: Inclusive upper bound on ``timestamp`` (``to`` query param).
         limit: Maximum number of events to return.
         offset: Number of leading events to skip.
+        mongo: MongoDB store (injected).
 
     Returns:
         ``{"events": [...], "total": <int>, "limit": <int>, "offset": <int>}``.
@@ -226,6 +229,7 @@ async def create_event(
 
     Args:
         event: The client-supplied event payload.
+        service: Ingestion service (injected).
 
     Returns:
         ``{"event_id": <str>, "received_at": <iso8601>}`` with HTTP 202.

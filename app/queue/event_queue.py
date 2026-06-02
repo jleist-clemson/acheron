@@ -15,6 +15,12 @@ class EventQueue:
     """
 
     def __init__(self, max_size: int) -> None:
+        """Initialise the bounded queue.
+
+        Args:
+            max_size: Maximum number of buffered events before ``put_nowait``
+                raises ``asyncio.QueueFull``.
+        """
         self._q: asyncio.Queue[EventDocument] = asyncio.Queue(maxsize=max_size)
 
     def put_nowait(self, event: EventDocument) -> None:
@@ -57,12 +63,15 @@ class EventQueue:
 
     @property
     def full(self) -> bool:
+        """Whether the queue is at capacity (further producers get QueueFull)."""
         return self._q.full()
 
     @property
     def empty(self) -> bool:
+        """Whether the queue currently holds no events."""
         return self._q.empty()
 
     @property
     def qsize(self) -> int:
+        """Number of events currently buffered in the queue."""
         return self._q.qsize()

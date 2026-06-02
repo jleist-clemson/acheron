@@ -1,7 +1,6 @@
 """Ingestion service: validates input, assigns server-side IDs, and enqueues."""
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import datetime, timezone
 
@@ -13,6 +12,11 @@ class IngestionService:
     """Stateless service that wraps the queue for event ingestion."""
 
     def __init__(self, queue: EventQueue) -> None:
+        """Initialise the service.
+
+        Args:
+            queue: The bounded queue that validated events are enqueued onto.
+        """
         self._queue = queue
 
     def ingest(self, event: EventCreate) -> EventDocument:

@@ -42,6 +42,17 @@ class WorkerPool:
         max_retries: int,
         base_delay: float,
     ) -> None:
+        """Initialise the worker pool.
+
+        Args:
+            queue: Source queue the consumers drain.
+            dlq: Dead-letter queue for events that exhaust their retries.
+            mongo: Source-of-truth store for the bulk write.
+            es: Derived search mirror for best-effort indexing.
+            batch_size: Maximum number of events per Mongo bulk write.
+            max_retries: Maximum Mongo write retries before routing to the DLQ.
+            base_delay: Base seconds for the exponential backoff between retries.
+        """
         self._queue = queue
         self._dlq = dlq
         self._mongo = mongo

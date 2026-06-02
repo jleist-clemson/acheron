@@ -24,6 +24,12 @@ class MongoStore:
     """
 
     def __init__(self, uri: str, db_name: str) -> None:
+        """Initialise the store; no connection is opened until ``connect()``.
+
+        Args:
+            uri: MongoDB connection URI.
+            db_name: Name of the database holding the events collection.
+        """
         self._uri = uri
         self._db_name = db_name
         self._client: Optional[AsyncIOMotorClient] = None
@@ -35,7 +41,7 @@ class MongoStore:
         logger.info("MongoDB connected (db=%s)", self._db_name)
 
     def close(self) -> None:
-        """Close the Motor connection pool (synchronous — Motor's close() is sync)."""
+        """Close the Motor connection pool (Motor shuts down synchronously)."""
         if self._client:
             self._client.close()
             logger.info("MongoDB connection closed")

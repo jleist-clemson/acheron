@@ -1,0 +1,17 @@
+# Ruff configuration.
+#
+# Docstrings follow the Google style, enforced via pydocstyle (the "D" rules).
+# These are layered on top of Ruff's default lint set (pyflakes + a subset of
+# pycodestyle) via extend-select.
+target-version = "py312"
+
+[lint]
+extend-select = ["D"]
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.per-file-ignores]
+# Test functions are documented by their descriptive names; requiring a
+# docstring on each would only restate the name. Keep docstring rules off here.
+"tests/**" = ["D"]
