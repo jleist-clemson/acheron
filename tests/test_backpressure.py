@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from app.ingestion.service import IngestionService
+from app.ingestion.service import IngestionClosed, IngestionService
 from app.models import EventCreate
 from app.queue.event_queue import EventQueue
 from tests.factories import make_event
@@ -86,3 +86,18 @@ async def test_ingest_propagates_queue_full_as_backpressure() -> None:
     # The service must surface QueueFull (never block) so the API can return 429.
     with pytest.raises(asyncio.QueueFull):
         service.ingest(event)
+
+
+async def test_ingest_rejected_after_stop_accepting() -> None:
+    queue = EventQueue(max_size=10)
+    service = IngestionService(queue)
+    event = EventCreate(
+        event_type="page_view", user_id="u1", source_url="https://example.test"
+    )
+
+    service.stop_accepting()
+
+    # During graceful shutdown, ingest must reject (-> HTTP 503) and enqueue nothing.
+    with pytest.raises(IngestionClosed):
+        service.ingest(event)
+    assert queue.qsize == 0

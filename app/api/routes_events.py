@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pymongo.errors import PyMongoError
 
 from app.cache.redis_cache import RedisCache
-from app.ingestion.service import IngestionService
+from app.ingestion.service import IngestionClosed, IngestionService
 from app.models import EventCreate
 from app.storage.es import ElasticsearchStore
 from app.storage.mongo import MongoStore
@@ -252,10 +252,16 @@ async def create_event(
         ``{"event_id": <str>, "received_at": <iso8601>}`` with HTTP 202.
 
     Raises:
-        HTTPException: 429 if the in-process queue is full (backpressure signal).
+        HTTPException: 503 if the service is shutting down and no longer
+            accepting events; 429 if the in-process queue is full (backpressure).
     """
     try:
         doc = service.ingest(event)
+    except IngestionClosed:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service is shutting down; not accepting new events",
+        )
     except asyncio.QueueFull:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

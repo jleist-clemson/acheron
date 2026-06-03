@@ -97,7 +97,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ---------------------------------------------------------------- shutdown
     logger.info("Shutdown initiated")
-    # Stop accepting new events and drain the in-flight queue before closing.
+    # Stop accepting new events first (POST /events -> 503), then drain the
+    # in-flight queue before closing clients (ARCHITECTURE.md §10).
+    ingestion.stop_accepting()
+    logger.info("No longer accepting new events; draining in-flight queue")
     await worker.stop(drain_timeout=30.0)
     mongo.close()           # Motor close() is synchronous
     await es.close()
