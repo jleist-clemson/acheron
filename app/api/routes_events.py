@@ -136,38 +136,55 @@ async def get_stats(
 @router.get("/search", summary="Full-text search via Elasticsearch")
 async def search_events(
     q: Optional[str] = Query(None, description="Full-text query string"),
+    event_type: Optional[str] = Query(None),
+    user_id: Optional[str] = Query(None),
+    source_url: Optional[str] = Query(None),
+    from_ts: Optional[datetime] = Query(None, alias="from"),
+    to_ts: Optional[datetime] = Query(None, alias="to"),
     size: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     es: ElasticsearchStore = Depends(_es),
 ) -> dict[str, Any]:
-    """Run a full-text search across event fields using Elasticsearch.
+    """Search events via Elasticsearch: free text and/or exact-match filters.
 
     Args:
-        q: The free-text query string; an empty query returns no hits.
+        q: Free-text query string; omit for a filter-only search.
+        event_type: Restrict to this event type, if given.
+        user_id: Restrict to this user, if given.
+        source_url: Restrict to this source URL, if given.
+        from_ts: Inclusive lower bound on ``timestamp`` (``from`` query param).
+        to_ts: Inclusive upper bound on ``timestamp`` (``to`` query param).
         size: Maximum number of hits to return.
+        offset: Number of leading hits to skip (pagination).
         es: Elasticsearch store (injected).
 
     Returns:
-        ``{"hits": [...], "total": <int>, "query": <str|None>}``.
+        ``{"hits": [...], "total": <int>, "query": <str|None>, "size": <int>,
+        "offset": <int>}``.
 
     Raises:
         HTTPException: 502 if the search backend is unavailable.
-
-    Note:
-        TODO: add filters (event_type, date range) and pagination.
     """
-    if not q:
-        return {"hits": [], "total": 0, "query": q}
     # ES is a degradable, derived backend — surface any failure as 502 Bad
     # Gateway rather than a 500, since Mongo (source of truth) is unaffected.
     try:
-        hits = await es.search(q, size=size)
+        hits, total = await es.search(
+            q,
+            event_type=event_type,
+            user_id=user_id,
+            source_url=source_url,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            size=size,
+            offset=offset,
+        )
     except Exception as exc:
         logger.error("Elasticsearch search failed (%s): %s", type(exc).__name__, exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Search backend unavailable",
         )
-    return {"hits": hits, "total": len(hits), "query": q}
+    return {"hits": hits, "total": total, "query": q, "size": size, "offset": offset}
 
 
 @router.get("", summary="List events with optional filters")

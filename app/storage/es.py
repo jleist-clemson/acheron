@@ -7,6 +7,7 @@ See ARCHITECTURE.md §4 for the dual-write rationale.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Optional
 
 from elasticsearch import AsyncElasticsearch
@@ -117,27 +118,98 @@ class ElasticsearchStore:
         await async_bulk(self._client, actions)
         logger.debug("ES indexed %d events", len(events))
 
-    async def search(self, query: str, size: int = 20) -> list[dict[str, Any]]:
-        """Run a full-text search across event fields.
+    async def search(
+        self,
+        query: Optional[str] = None,
+        *,
+        event_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        source_url: Optional[str] = None,
+        from_ts: Optional[datetime] = None,
+        to_ts: Optional[datetime] = None,
+        size: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Search events by free text and/or exact-match filters, with paging.
+
+        The free-text *query* (if given) scores results via ``multi_match``;
+        the remaining arguments are exact-match ``filter`` clauses that narrow
+        without affecting score. With no query and no filters this matches all
+        events.
 
         Args:
-            query: The free-text query string.
+            query: Free-text query string scored across ``event_type`` and the
+                analysed ``source_url.text`` field; omit for a filter-only search.
+            event_type: Exact ``event_type`` to match, if given.
+            user_id: Exact ``user_id`` to match, if given.
+            source_url: Exact ``source_url`` to match, if given.
+            from_ts: Inclusive lower bound on ``timestamp``, if given.
+            to_ts: Inclusive upper bound on ``timestamp``, if given.
             size: Maximum number of hits to return.
+            offset: Number of leading hits to skip (pagination).
 
         Returns:
-            The matching documents' ``_source`` bodies.
+            A ``(hits, total)`` tuple: the page of matching documents'
+            ``_source`` bodies and the total number of matches.
 
         Note:
-            TODO: expand the query DSL (filters, aggregations, relevance tuning).
+            TODO: relevance/analyzer tuning once real metadata shapes are known.
         """
+        must: list[dict[str, Any]] = []
+        if query:
+            must.append(
+                {
+                    "multi_match": {
+                        "query": query,
+                        "fields": ["event_type", "source_url.text"],
+                    }
+                }
+            )
+
+        filters: list[dict[str, Any]] = []
+        if event_type:
+            filters.append({"term": {"event_type": event_type}})
+        if user_id:
+            filters.append({"term": {"user_id": user_id}})
+        if source_url:
+            filters.append({"term": {"source_url": source_url}})
+        ts_range = _timestamp_range(from_ts, to_ts)
+        if ts_range:
+            filters.append({"range": {"timestamp": ts_range}})
+
+        bool_query: dict[str, Any] = {}
+        if must:
+            bool_query["must"] = must
+        if filters:
+            bool_query["filter"] = filters
+        es_query = {"bool": bool_query} if bool_query else {"match_all": {}}
+
         resp = await self._client.search(
             index=self._index,
-            query={
-                "multi_match": {
-                    "query": query,
-                    "fields": ["event_type", "source_url.text"],
-                }
-            },
+            query=es_query,
             size=size,
+            from_=offset,
+            track_total_hits=True,  # accurate totals beyond ES's default 10k cap
         )
-        return [hit["_source"] for hit in resp["hits"]["hits"]]
+        hits = [hit["_source"] for hit in resp["hits"]["hits"]]
+        return hits, resp["hits"]["total"]["value"]
+
+
+def _timestamp_range(
+    from_ts: Optional[datetime], to_ts: Optional[datetime]
+) -> Optional[dict[str, str]]:
+    """Build an Elasticsearch range clause for the ``timestamp`` field.
+
+    Args:
+        from_ts: Inclusive lower bound, if given.
+        to_ts: Inclusive upper bound, if given.
+
+    Returns:
+        A ``{"gte"/"lte": <iso8601>}`` clause, or None when both bounds are absent.
+    """
+    rng: dict[str, str] = {}
+    if from_ts:
+        rng["gte"] = from_ts.isoformat()
+    if to_ts:
+        rng["lte"] = to_ts.isoformat()
+    return rng or None
