@@ -152,10 +152,10 @@ class WorkerPool:
                 last_exc = exc
                 if attempt == self._max_retries:
                     break
-                # Exponential backoff with uniform jitter to spread retries.
-                delay = self._base_delay * math.pow(2, attempt) + random.uniform(
-                    0, self._base_delay
-                )
+                # Exponential backoff with *full* jitter (AWS-style): sleep a
+                # random duration in [0, base * 2**attempt) so concurrent
+                # workers' retries de-correlate and don't form a thundering herd.
+                delay = random.uniform(0, self._base_delay * math.pow(2, attempt))
                 logger.warning(
                     "Mongo write failed (attempt %d/%d), retrying in %.2fs: %s",
                     attempt + 1,

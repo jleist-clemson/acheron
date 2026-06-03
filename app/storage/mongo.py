@@ -82,14 +82,20 @@ class MongoStore:
             return False
 
     async def bulk_write(self, events: list[EventDocument]) -> None:
-        """Insert a batch of events, silently skipping duplicate ``event_id``s.
+        """Insert a batch of events idempotently.
+
+        Each event's ``event_id`` is stored as its ``_id`` (see
+        :func:`_to_doc`), so an event that is retried or redelivered cannot
+        create a duplicate — a repeat ``_id`` is skipped rather than erroring.
+        Duplicate ``event_id``s *within* the batch are collapsed before the
+        write so they never reach Mongo as conflicts.
 
         Args:
             events: The events to insert. An empty list is a no-op.
         """
         if not events:
             return
-        docs = [_to_doc(e) for e in events]
+        docs = _dedupe_by_id([_to_doc(e) for e in events])
         try:
             await self._collection.insert_many(docs, ordered=False)
         except BulkWriteError as exc:
@@ -233,6 +239,24 @@ class MongoStore:
             "total": sum(row["count"] for row in by_type),
             "by_type": by_type,
         }
+
+
+def _dedupe_by_id(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop documents with a repeated ``_id``, keeping the first occurrence.
+
+    Args:
+        docs: Motor-ready documents, each carrying an ``_id``.
+
+    Returns:
+        The documents in order, with later duplicates of any ``_id`` removed.
+    """
+    seen: set[Any] = set()
+    unique: list[dict[str, Any]] = []
+    for doc in docs:
+        if doc["_id"] not in seen:
+            seen.add(doc["_id"])
+            unique.append(doc)
+    return unique
 
 
 def _timestamp_clause(

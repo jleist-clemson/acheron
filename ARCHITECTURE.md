@@ -119,14 +119,24 @@ single-node local Mongo is not — noted for §10.)
 
 **Implementation.** A bounded `asyncio.Queue` with N concurrent worker tasks
 started in the FastAPI lifespan hook. Producers (`POST /events`) validate then
-`put()`; workers `get()`, process, and `task_done()`.
+`put_nowait()` (non-blocking — a full queue surfaces immediately as HTTP 429);
+workers `get()`, process a batch, and `task_done()`.
 
 **Guarantees it provides:**
 
-- **At-least-once-ish, within a single process lifetime.** A failed event is
-  re-enqueued and retried with exponential backoff + jitter up to `MAX_RETRIES`,
-  then moved to a dead-letter queue. Within one running process this approximates
-  at-least-once delivery.
+- **At-least-once-ish, within a single process lifetime.** A failed batch is
+  retried **in place** by its worker — exponential backoff with full jitter, up
+  to `MAX_RETRIES` — then routed to the dead-letter queue if it still fails.
+  Retrying in place (rather than re-enqueuing) keeps the batch atomic and avoids
+  a "re-enqueue into an already-full queue" failure mode; the trade-off is that
+  the worker is occupied during its own backoff, so a sustained store outage
+  backs all workers up into queue backpressure (§7) instead of spinning. Within
+  one running process this approximates at-least-once delivery.
+- **Idempotent writes (dedup).** Each event's server-assigned `event_id` is its
+  Mongo `_id`, so a retried event can't double-insert (a repeat `_id` is
+  skipped), and duplicate ids within a batch are collapsed before the write.
+  Dedup of *distinct* client submissions of the same logical event is out of
+  scope here — that needs idempotency keys on ingest (§11).
 - **Backpressure.** The bounded queue rejects/slows producers when full rather
   than growing unbounded — the API can return `503`/`429` instead of OOMing.
 - **Ordering is not guaranteed** across concurrent workers (and we don't need it).
@@ -143,8 +153,9 @@ started in the FastAPI lifespan hook. Producers (`POST /events`) validate then
 
 **If this were real SQS:** the API would `SendMessage` and the worker would long-poll
 `ReceiveMessage`, process, then `DeleteMessage` only on success (delete-on-ack is
-what gives at-least-once its teeth). Visibility timeout replaces our in-memory
-re-enqueue; a configured redrive policy replaces the hand-rolled DLQ. The worker
+what gives at-least-once its teeth). Visibility timeout and redelivery replace
+our in-process retry; a configured redrive policy replaces the hand-rolled DLQ.
+The worker
 becomes a separate, independently scalable process. _(See bonus: AWS SQS drop-in
 notes.)_
 
