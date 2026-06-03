@@ -79,7 +79,7 @@ most-tolerant-of-staleness read.
 | **Queue (`asyncio.Queue`)** | Buffering between fast producers and slower consumers; applying backpressure when full. | Durability. Contents are lost if the process dies (see §7). |
 | **Worker** | Draining the queue, deduplication, batching writes, retry/backoff, routing exhausted events to the DLQ, dual-writing to Mongo + ES. | Request handling. Its scaling signal is queue depth, not HTTP traffic. |
 | **MongoDB** | **Source of truth.** Flexible event documents (`metadata` is schemaless) and the aggregation pipelines behind `/stats`. | Full-text search. |
-| **Elasticsearch** | Full-text search over `metadata` and analytics-style queries (`/search`). A **derived mirror**, not the system of record. | Being authoritative. If ES and Mongo disagree, Mongo wins. |
+| **Elasticsearch** | Search over `metadata` (conflict-free `flattened`, keyword leaves) and full-text/analytics queries (`/search`). A **derived mirror**, not the system of record. | Being authoritative. If ES and Mongo disagree, Mongo wins. |
 | **Redis** | Caching the `/stats/realtime` summary; natural home for rate-limit counters. | Durable state. Configured cache-only (no persistence). |
 
 ---
@@ -94,11 +94,14 @@ Three stores because three genuinely different access patterns:
   grouping (count by `event_type` × time bucket) natively, so the analytics
   path stays in one place. Mongo is authoritative; everything else is derived
   from it.
-- **Elasticsearch for search.** Full-text search across arbitrary metadata is
-  exactly what an inverted index is for and exactly what Mongo is *not* for.
-  Pushing `/search` to ES keeps Mongo's index footprint small (see §6) and gives
-  us relevance scoring and text analysis for free. ES is treated as a rebuildable
-  projection: if it falls behind or is lost, it can be reindexed from Mongo.
+- **Elasticsearch for search.** Searching across arbitrary metadata is exactly
+  what an inverted index is for and exactly what Mongo is *not* for. Pushing
+  `/search` to ES keeps Mongo's index footprint small (see §6). Schemaless
+  `metadata` is indexed as a conflict-free `flattened` field (keyword leaves),
+  while known text fields like `source_url` get analyzed full-text and relevance
+  scoring; tokenized search over arbitrary metadata values is deferred (§6). ES
+  is treated as a rebuildable projection: if it falls behind or is lost, it can
+  be reindexed from Mongo.
 - **Redis for the realtime summary.** `/stats/realtime` is read constantly and
   tolerates being a few seconds stale, which is the textbook case for a TTL
   cache. Serving it from Redis takes load off Mongo's aggregation path entirely.
@@ -193,8 +196,13 @@ notes.)_
 - `event_type`, `user_id` → `keyword` (exact match, aggregations, no analysis).
 - `timestamp` → `date`.
 - `source_url` → `keyword` with a `text` sub-field for partial/tokenized search.
-- `metadata` → `object`; string leaves analyzed as `text` for full-text search.
-  _(TODO: decide standard vs. custom analyzer once real metadata shapes are known.)_
+- `metadata` → `flattened`. The whole object is indexed as a single field of
+  keyword-like leaves, so arbitrary/schemaless keys can't explode the mapping and
+  mixed value types across event types can't cause index-time conflicts (the
+  failure mode of a plain `object` with dynamic mapping). Trade-off: leaves are
+  exact-match keywords, not analyzed full-text; revisit if tokenized search over
+  metadata *values* becomes a requirement. Changing this on an existing index
+  requires a reindex (a field's mapping type is immutable once set).
 
 ---
 

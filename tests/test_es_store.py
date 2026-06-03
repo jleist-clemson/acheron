@@ -53,3 +53,18 @@ async def test_bulk_index_empty_is_noop(monkeypatch) -> None:
     await store.bulk_index([])
 
     fake_bulk.assert_not_awaited()
+
+
+async def test_ensure_mapping_indexes_metadata_as_flattened() -> None:
+    store = ElasticsearchStore("http://es:9200", "events")
+    client = AsyncMock()
+    client.indices.exists.return_value = False
+    store._client = client
+
+    await store.ensure_mapping()
+
+    client.indices.create.assert_awaited_once()
+    props = client.indices.create.await_args.kwargs["mappings"]["properties"]
+    # flattened avoids the dynamic-object mapping conflict on schemaless metadata.
+    assert props["metadata"] == {"type": "flattened"}
+    assert store._mapping_ready is True

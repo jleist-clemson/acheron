@@ -30,7 +30,13 @@ _MAPPING = {
                 "type": "keyword",
                 "fields": {"text": {"type": "text"}},
             },
-            "metadata": {"type": "object"},
+            # Schemaless metadata varies by event type. "flattened" indexes the
+            # whole object as one field of keyword-like leaves, so arbitrary keys
+            # never explode the mapping and mixed value types across events can't
+            # cause index-time conflicts (the failure mode of a plain "object"
+            # with dynamic mapping). Trade-off: leaves are exact-match keywords,
+            # not analysed full-text.
+            "metadata": {"type": "flattened"},
         }
     }
 }
