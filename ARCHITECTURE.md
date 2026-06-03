@@ -212,7 +212,9 @@ notes.)_
   this window, so batch size is a tunable tradeoff between throughput and
   blast radius. A real broker's visibility-timeout redelivery closes this gap.
 - **Elasticsearch unavailable.** Mongo write still succeeds (source of truth
-  intact); the ES write fails and is retried/DLQ'd. `/search` degrades or errors,
+  intact); the ES index fails and is logged as best-effort — not retried or sent
+  to the DLQ (only Mongo failures are), and a single malformed document no longer
+  discards the rest of its batch. `/search` degrades or errors,
   but no authoritative data is lost — ES can be reindexed from Mongo later.
 - **Redis unavailable.** `/stats/realtime` falls back to computing from Mongo
   (slower) or returns a clearly-degraded response. Cache loss is never data loss.

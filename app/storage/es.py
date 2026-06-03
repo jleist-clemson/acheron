@@ -93,12 +93,17 @@ class ElasticsearchStore:
     async def bulk_index(self, events: list[EventDocument]) -> None:
         """Bulk-index a batch of events, creating the mapping first if needed.
 
+        Per-document failures (e.g. a mapping conflict) are tolerated: the rest
+        of the batch is still indexed and the failures are logged, rather than
+        the whole batch being discarded. A transport-level failure (ES
+        unreachable) still propagates so the worker can record ES as degraded.
+
         Args:
             events: The events to index. An empty list is a no-op.
 
         Raises:
-            Exception: On any transport or bulk-indexing failure. ES is a
-                best-effort mirror, so the worker catches and logs these
+            Exception: On a transport-level failure (e.g. ES unreachable). ES is
+                a best-effort mirror, so the worker catches and logs these
                 rather than failing the (already-committed) Mongo write.
         """
         if not events:
@@ -115,8 +120,21 @@ class ElasticsearchStore:
             }
             for e in events
         ]
-        await async_bulk(self._client, actions)
-        logger.debug("ES indexed %d events", len(events))
+        # raise_on_error=False: one malformed document must not discard the whole
+        # batch (a single mapping conflict shouldn't lose every other event).
+        succeeded, errors = await async_bulk(
+            self._client, actions, raise_on_error=False
+        )
+        if errors:
+            logger.warning(
+                "ES indexed %d/%d events; %d failed (first: %s)",
+                succeeded,
+                len(actions),
+                len(errors),
+                errors[0],
+            )
+        else:
+            logger.debug("ES indexed %d events", succeeded)
 
     async def search(
         self,
