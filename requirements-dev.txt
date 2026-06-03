@@ -3,3 +3,7 @@
 -r requirements.txt
 pytest==8.3.4
 pytest-asyncio==0.24.0
+# Integration tests (opt-in: `pytest -m integration`, requires Docker)
+httpx==0.28.1
+asgi-lifespan==2.1.0
+testcontainers==4.14.2

@@ -73,27 +73,45 @@ Interactive docs: `http://localhost:8000/docs`
 ## Testing approach
 
 Tests live in `tests/` and use `pytest` + `pytest-asyncio`. Install the dev
-dependencies and run them with no backing services required (stores are mocked):
+dependencies first:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -v
 ```
 
-**Implemented (unit, fully mocked):**
+**Unit tests** — no backing services required (stores are mocked):
+
+```bash
+pytest -v          # integration tests are deselected by default
+```
 
 - **Backpressure** (`test_backpressure.py`) — `EventQueue` raises `QueueFull` at
-  capacity instead of blocking; `IngestionService` assigns server-side fields and
-  propagates that `QueueFull` so the API can return 429.
+  capacity instead of blocking; `IngestionService` assigns server-side fields,
+  propagates `QueueFull` (→ 429), and rejects ingest once shut down (→ 503).
 - **Worker** (`test_worker.py`) — Mongo-then-ES write order; retry with backoff
   then success; retries exhausted → events routed to the DLQ and ES skipped;
   ES failure is best-effort (no DLQ, no raise); graceful drain on `stop()`.
+- **Stores** (`test_search.py`, `test_es_store.py`, `test_mongo_store.py`) — ES
+  bool-query construction; bulk-index per-document failure tolerance; the
+  `flattened` metadata mapping; within-batch dedup by `event_id`.
 
-**Planned (not yet implemented):**
+**Integration tests** — drive the real app (lifespan, in-process worker, stores)
+against ephemeral **MongoDB + Redis** containers via `testcontainers`. Requires
+Docker; opt in with the marker (the socket is auto-detected for Docker Desktop /
+Rancher Desktop / Colima):
 
-- **Integration** — spin up real MongoDB + Redis via `testcontainers`; assert the
-  end-to-end POST → worker → GET round-trip and the stats aggregations.
-- **Contract** — validate the Elasticsearch mapping against the ES 8.x API.
+```bash
+pytest -m integration -v
+```
+
+`test_integration.py` covers the end-to-end POST → worker → GET round-trip,
+filters/pagination, the `/stats` aggregation, the Redis cache-aside miss→hit, and
+— with Elasticsearch pointed at a dead address — the graceful-degradation
+contract (`/search` → 502, readiness reports ES down, durable pipeline intact).
+
+**Still planned:** a dedicated Elasticsearch container + indexing/search contract
+test (ES query building and the mapping are currently covered by unit tests and
+were verified manually against a live cluster).
 
 ---
 
