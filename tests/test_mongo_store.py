@@ -19,6 +19,23 @@ def _store_with_collection() -> tuple[MongoStore, AsyncMock]:
     return store, coll
 
 
+def _store_with_find(docs: list[dict]) -> tuple[MongoStore, MagicMock, MagicMock]:
+    """Wire find().sort().skip().limit().to_list() -> docs, plus count_documents."""
+    store = MongoStore("mongodb://x:27017", "db")
+    cursor = MagicMock()
+    cursor.sort.return_value = cursor
+    cursor.skip.return_value = cursor
+    cursor.limit.return_value = cursor
+    cursor.to_list = AsyncMock(return_value=docs)
+    coll = MagicMock()
+    coll.find.return_value = cursor
+    coll.count_documents = AsyncMock(return_value=999)
+    client = MagicMock()
+    client.__getitem__.return_value.__getitem__.return_value = coll
+    store._client = client
+    return store, coll, cursor
+
+
 async def test_bulk_write_collapses_duplicate_event_ids() -> None:
     store, coll = _store_with_collection()
     dup = make_event()
@@ -38,3 +55,27 @@ async def test_bulk_write_empty_batch_is_noop() -> None:
     await store.bulk_write([])
 
     coll.insert_many.assert_not_awaited()
+
+
+async def test_find_events_signals_has_more_via_limit_plus_one() -> None:
+    # limit=2 fetches 3; a 3rd doc means another page exists, trimmed back to 2.
+    store, coll, cursor = _store_with_find([{"a": 1}, {"a": 2}, {"a": 3}])
+
+    events, has_more, total = await store.find_events(limit=2)
+
+    cursor.limit.assert_called_once_with(3)  # limit + 1
+    assert has_more is True
+    assert len(events) == 2
+    # No exact count by default — that's the expensive scan we avoid.
+    assert total is None
+    coll.count_documents.assert_not_awaited()
+
+
+async def test_find_events_with_total_runs_count() -> None:
+    store, coll, cursor = _store_with_find([{"a": 1}])
+
+    events, has_more, total = await store.find_events(limit=2, with_total=True)
+
+    assert has_more is False
+    assert total == 999
+    coll.count_documents.assert_awaited_once()

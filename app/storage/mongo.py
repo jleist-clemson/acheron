@@ -112,8 +112,14 @@ class MongoStore:
         to_ts: Optional[datetime] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[list[dict[str, Any]], int]:
+        with_total: bool = False,
+    ) -> tuple[list[dict[str, Any]], bool, Optional[int]]:
         """Query events by filter, newest first, with pagination.
+
+        Fetches one document beyond *limit* to decide whether a further page
+        exists, so the common path is a single indexed query. The exact match
+        count is only computed when *with_total* is set, since
+        ``count_documents`` is a second full scan that gets expensive at volume.
 
         Args:
             event_type: Restrict to this event type, if given.
@@ -123,10 +129,12 @@ class MongoStore:
             to_ts: Inclusive upper bound on ``timestamp``, if given.
             limit: Maximum number of events to return.
             offset: Number of leading events to skip.
+            with_total: When True, also compute the exact match count.
 
         Returns:
-            A ``(events, total_count)`` tuple: the page of matching documents
-            and the total number matching the filter (ignoring pagination).
+            A ``(events, has_more, total)`` tuple: the page of matching
+            documents (newest first), whether a further page exists, and the
+            exact match count — ``None`` unless *with_total* was set.
         """
         filt: dict[str, Any] = {}
         if event_type:
@@ -139,15 +147,19 @@ class MongoStore:
         if ts_clause:
             filt["timestamp"] = ts_clause
 
-        total = await self._collection.count_documents(filt)
+        # Fetch one extra to detect a further page without a separate count.
         cursor = (
             self._collection.find(filt, {"_id": 0})
             .sort("timestamp", -1)
             .skip(offset)
-            .limit(limit)
+            .limit(limit + 1)
         )
-        docs = await cursor.to_list(length=limit)
-        return docs, total
+        docs = await cursor.to_list(length=limit + 1)
+        has_more = len(docs) > limit
+        docs = docs[:limit]
+
+        total = await self._collection.count_documents(filt) if with_total else None
+        return docs, has_more, total
 
     async def aggregate_counts(
         self,

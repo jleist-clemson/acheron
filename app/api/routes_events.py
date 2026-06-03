@@ -20,11 +20,6 @@ from app.storage.mongo import MongoStore
 
 logger = logging.getLogger(__name__)
 
-# Window the /events/stats/realtime summary covers. Fixed for now (no env knob
-# in .env.example); REALTIME_CACHE_TTL_SECONDS controls cache freshness, not
-# this data window. Promote to config if it needs to be tunable per deploy.
-REALTIME_WINDOW_SECONDS = 300
-
 router = APIRouter(prefix="/events", tags=["events"])
 
 
@@ -74,7 +69,7 @@ async def get_realtime_stats(
     settings = request.app.state.settings
 
     async def compute() -> dict[str, Any]:
-        return await mongo.aggregate_recent_counts(REALTIME_WINDOW_SECONDS)
+        return await mongo.aggregate_recent_counts(settings.realtime_window_seconds)
 
     try:
         data, hit = await cache.get_or_set(
@@ -196,9 +191,15 @@ async def list_events(
     to_ts: Optional[datetime] = Query(None, alias="to"),
     limit: int = Query(50, ge=1, le=1000),
     offset: int = Query(0, ge=0),
+    with_total: bool = Query(
+        False, description="Also compute the exact match count (an extra query)"
+    ),
     mongo: MongoStore = Depends(_mongo),
 ) -> dict[str, Any]:
     """List events from MongoDB, filtered and paginated.
+
+    Pagination returns ``has_more`` cheaply (a single indexed query); request
+    ``with_total=true`` for the exact match count, which costs an extra scan.
 
     Args:
         event_type: Restrict to this event type, if given.
@@ -208,10 +209,12 @@ async def list_events(
         to_ts: Inclusive upper bound on ``timestamp`` (``to`` query param).
         limit: Maximum number of events to return.
         offset: Number of leading events to skip.
+        with_total: Also return the exact total match count (extra count query).
         mongo: MongoDB store (injected).
 
     Returns:
-        ``{"events": [...], "total": <int>, "limit": <int>, "offset": <int>}``.
+        ``{"events": [...], "limit": <int>, "offset": <int>, "has_more": <bool>,
+        "total": <int|null>}`` (``total`` is null unless ``with_total`` is set).
 
     Raises:
         HTTPException: 503 if the event store is unavailable.
@@ -219,7 +222,7 @@ async def list_events(
     # Mongo is the source of truth for this read path; if it's unavailable the
     # endpoint degrades to a clear 503 (ARCHITECTURE.md §7) rather than a 500.
     try:
-        events, total = await mongo.find_events(
+        events, has_more, total = await mongo.find_events(
             event_type=event_type,
             user_id=user_id,
             source_url=source_url,
@@ -227,6 +230,7 @@ async def list_events(
             to_ts=to_ts,
             limit=limit,
             offset=offset,
+            with_total=with_total,
         )
     except PyMongoError as exc:
         logger.error("Mongo query failed (%s): %s", type(exc).__name__, exc)
@@ -234,7 +238,13 @@ async def list_events(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Event store temporarily unavailable",
         )
-    return {"events": events, "total": total, "limit": limit, "offset": offset}
+    return {
+        "events": events,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+        "total": total,
+    }
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED, summary="Ingest a new event")

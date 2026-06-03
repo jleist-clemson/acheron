@@ -129,8 +129,10 @@ async def test_ingest_then_read_round_trip(client: httpx.AsyncClient) -> None:
     event_id = resp.json()["event_id"]
     assert event_id
 
-    data = await _poll(client, "/events", {"event_type": et}, lambda d: d["total"] >= 1)
-    assert data["total"] == 1
+    data = await _poll(
+        client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1
+    )
+    assert len(data["events"]) == 1
     event = data["events"][0]
     assert event["event_id"] == event_id
     assert event["user_id"] == "alice"
@@ -146,16 +148,22 @@ async def test_filters_and_pagination(client: httpx.AsyncClient) -> None:
             json={"event_type": et, "user_id": uid, "source_url": "https://t.test"},
         )
 
-    data = await _poll(client, "/events", {"event_type": et}, lambda d: d["total"] >= 3)
-    assert data["total"] == 3
+    data = await _poll(
+        client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 3
+    )
+    assert len(data["events"]) == 3
 
     one = await client.get("/events", params={"event_type": et, "user_id": "u2"})
-    assert one.json()["total"] == 1
+    assert len(one.json()["events"]) == 1
 
     page = await client.get("/events", params={"event_type": et, "limit": 2, "offset": 0})
     body = page.json()
-    assert body["total"] == 3
     assert len(body["events"]) == 2
+    assert body["has_more"] is True
+    assert body["total"] is None  # not computed unless requested
+
+    counted = await client.get("/events", params={"event_type": et, "with_total": "true"})
+    assert counted.json()["total"] == 3
 
 
 async def test_stats_aggregation(client: httpx.AsyncClient) -> None:
@@ -170,7 +178,7 @@ async def test_stats_aggregation(client: httpx.AsyncClient) -> None:
             "/events", json={"event_type": b, "user_id": "x", "source_url": "https://t.test"}
         )
 
-    await _poll(client, "/events", {}, lambda d: d["total"] >= 5)
+    await _poll(client, "/events", {}, lambda d: len(d["events"]) >= 5)
     stats = (await client.get("/events/stats")).json()
     counts = {row["event_type"]: row["count"] for row in stats["data"]}
     assert counts.get(a) == 3
@@ -183,7 +191,7 @@ async def test_realtime_stats_cache_miss_then_hit(client: httpx.AsyncClient) -> 
     await client.post(
         "/events", json={"event_type": et, "user_id": "x", "source_url": "https://t.test"}
     )
-    await _poll(client, "/events", {"event_type": et}, lambda d: d["total"] >= 1)
+    await _poll(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
 
     first = (await client.get("/events/stats/realtime")).json()
     second = (await client.get("/events/stats/realtime")).json()

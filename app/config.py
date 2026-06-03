@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     max_retries: int = 5
     retry_base_delay_seconds: float = 0.5
     realtime_cache_ttl_seconds: int = 15
+    # Look-back window the /events/stats/realtime summary covers. Distinct from
+    # the cache TTL above (which governs freshness, not the data window).
+    realtime_window_seconds: int = 300
 
     # --- observability ---
     log_level: str = "INFO"
