@@ -138,8 +138,9 @@ workers `get()`, process a batch, and `task_done()`.
 - **Idempotent writes (dedup).** Each event's server-assigned `event_id` is its
   Mongo `_id`, so a retried event can't double-insert (a repeat `_id` is
   skipped), and duplicate ids within a batch are collapsed before the write.
-  Dedup of *distinct* client submissions of the same logical event is out of
-  scope here — that needs idempotency keys on ingest (§11).
+  *Distinct* client submissions of the same logical event can be deduplicated by
+  sending a matching `Idempotency-Key` header, which maps to a deterministic
+  `event_id` (`uuid5`) so the repeat collapses at the Mongo write (§11).
 - **Backpressure.** The bounded queue rejects/slows producers when full rather
   than growing unbounded — the API can return `503`/`429` instead of OOMing.
 - **Ordering is not guaranteed** across concurrent workers (and we don't need it).
@@ -314,5 +315,8 @@ is the whole point.
   break consumers.
 - **Observability:** structured logs (in place), plus metrics (queue depth,
   retry counts, DLQ size, cache hit rate) and tracing across the ingest path.
-- **Idempotency keys** on ingest to make at-least-once delivery safe end-to-end
-  rather than relying on best-effort dedup in the worker.
+- **Idempotency keys** on ingest — *implemented*: an optional `Idempotency-Key`
+  header maps to a deterministic `event_id` (`uuid5`), so duplicate submissions
+  collapse at the Mongo write. A fuller version would persist a key→response
+  record to detect duplicates *synchronously* at ingest; we keep ingest
+  non-blocking (§3), so dedup happens downstream rather than at accept time.

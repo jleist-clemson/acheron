@@ -140,6 +140,24 @@ async def test_ingest_then_read_round_trip(client: httpx.AsyncClient) -> None:
     assert event["received_at"]  # server-assigned on ingest
 
 
+async def test_idempotency_key_dedupes_duplicate_submissions(
+    client: httpx.AsyncClient,
+) -> None:
+    et = f"itest_{uuid.uuid4().hex[:8]}"
+    body = {"event_type": et, "user_id": "x", "source_url": "https://t.test"}
+    headers = {"Idempotency-Key": "order-123"}
+
+    r1 = await client.post("/events", json=body, headers=headers)
+    r2 = await client.post("/events", json=body, headers=headers)
+    assert r1.status_code == r2.status_code == 202
+    # Same key -> same event_id returned to the client.
+    assert r1.json()["event_id"] == r2.json()["event_id"]
+
+    # After the worker flushes, the duplicate collapses to exactly one document.
+    data = await _poll(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
+    assert len(data["events"]) == 1
+
+
 async def test_filters_and_pagination(client: httpx.AsyncClient) -> None:
     et = f"itest_{uuid.uuid4().hex[:8]}"
     for uid in ("u1", "u2", "u3"):

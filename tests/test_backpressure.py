@@ -101,3 +101,30 @@ async def test_ingest_rejected_after_stop_accepting() -> None:
     with pytest.raises(IngestionClosed):
         service.ingest(event)
     assert queue.qsize == 0
+
+
+async def test_same_idempotency_key_yields_same_event_id() -> None:
+    service = IngestionService(EventQueue(max_size=10))
+    event = EventCreate(
+        event_type="page_view", user_id="u1", source_url="https://example.test"
+    )
+
+    first = service.ingest(event, idempotency_key="order-123")
+    second = service.ingest(event, idempotency_key="order-123")
+
+    # Same key -> same deterministic event_id, so the write dedupes downstream.
+    assert first.event_id == second.event_id
+
+
+async def test_distinct_keys_and_no_key_yield_distinct_event_ids() -> None:
+    service = IngestionService(EventQueue(max_size=10))
+    event = EventCreate(
+        event_type="page_view", user_id="u1", source_url="https://example.test"
+    )
+
+    assert (
+        service.ingest(event, idempotency_key="k1").event_id
+        != service.ingest(event, idempotency_key="k2").event_id
+    )
+    # No key -> a fresh uuid4 each time (every call is a distinct event).
+    assert service.ingest(event).event_id != service.ingest(event).event_id

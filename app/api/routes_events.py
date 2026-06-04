@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pymongo.errors import PyMongoError
 
 from app.cache.redis_cache import RedisCache
@@ -250,12 +250,15 @@ async def list_events(
 @router.post("", status_code=status.HTTP_202_ACCEPTED, summary="Ingest a new event")
 async def create_event(
     event: EventCreate,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     service: IngestionService = Depends(_ingestion),
 ) -> dict[str, Any]:
     """Validate and enqueue an event for asynchronous processing.
 
     Args:
         event: The client-supplied event payload.
+        idempotency_key: Optional ``Idempotency-Key`` header; repeat submissions
+            with the same key collapse to a single stored event (same event_id).
         service: Ingestion service (injected).
 
     Returns:
@@ -266,7 +269,7 @@ async def create_event(
             accepting events; 429 if the in-process queue is full (backpressure).
     """
     try:
-        doc = service.ingest(event)
+        doc = service.ingest(event, idempotency_key=idempotency_key)
     except IngestionClosed:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

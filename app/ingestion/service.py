@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 from app.models import EventCreate, EventDocument
 from app.queue.event_queue import EventQueue
 
+# Fixed namespace for deriving a deterministic event_id from an idempotency key,
+# so repeat submissions of the same logical event collapse to one stored event.
+_IDEMPOTENCY_NAMESPACE = uuid.UUID("a3b5c7d9-1e2f-4a6b-8c0d-1234567890ab")
+
 
 class IngestionClosed(RuntimeError):
     """Raised by ``ingest`` once the service has stopped accepting events.
@@ -35,11 +39,20 @@ class IngestionService:
         """
         self._accepting = False
 
-    def ingest(self, event: EventCreate) -> EventDocument:
+    def ingest(
+        self, event: EventCreate, idempotency_key: str | None = None
+    ) -> EventDocument:
         """Assign server-side identifiers and enqueue the event.
+
+        With an *idempotency_key*, the ``event_id`` is derived deterministically
+        from it (``uuid5``), so repeat submissions of the same logical event map
+        to the same ``_id`` and are deduplicated at the Mongo write. Without one,
+        a fresh ``uuid4`` is assigned (every call is a distinct event).
 
         Args:
             event: The validated, client-supplied event.
+            idempotency_key: Optional client-supplied key; equal keys collapse to
+                one stored event. Blank/whitespace is treated as absent.
 
         Returns:
             The stored event, with its server-assigned ``event_id`` and
@@ -53,8 +66,12 @@ class IngestionService:
         """
         if not self._accepting:
             raise IngestionClosed("Service is shutting down; not accepting new events")
+        key = idempotency_key.strip() if idempotency_key else None
+        event_id = (
+            str(uuid.uuid5(_IDEMPOTENCY_NAMESPACE, key)) if key else str(uuid.uuid4())
+        )
         doc = EventDocument(
-            event_id=str(uuid.uuid4()),
+            event_id=event_id,
             received_at=datetime.now(timezone.utc),
             **event.model_dump(),
         )
