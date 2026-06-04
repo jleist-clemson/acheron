@@ -2,7 +2,7 @@
 
 High-volume event ingestion platform: FastAPI + asyncio.Queue + MongoDB + Elasticsearch + Redis.
 
-Events flow: `POST /events` → bounded in-process queue → async worker → MongoDB (source of truth) + Elasticsearch (search mirror).  Redis caches the realtime stats summary.
+Events flow: `POST /events` → bounded in-process queue → async worker → MongoDB (source of truth). Elasticsearch (search mirror) is populated strictly downstream from a Mongo outbox by a background indexer. Redis caches the realtime stats summary.
 
 ---
 

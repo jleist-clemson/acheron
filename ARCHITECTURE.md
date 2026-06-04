@@ -77,7 +77,7 @@ most-tolerant-of-staleness read.
 |---|---|---|
 | **API (FastAPI)** | Request validation, auth/rate-limit boundary, enqueue, serving reads. Returns `202 Accepted` on ingest — it never blocks on a DB write. | Persistence. The API must stay stateless so it can scale on request load alone. |
 | **Queue (`asyncio.Queue`)** | Buffering between fast producers and slower consumers; applying backpressure when full. | Durability. Contents are lost if the process dies (see §7). |
-| **Worker** | Draining the queue, deduplication, batching writes, retry/backoff, routing exhausted events to the DLQ, dual-writing to Mongo + ES. | Request handling. Its scaling signal is queue depth, not HTTP traffic. |
+| **Worker** | Draining the queue, deduplication, batching writes, retry/backoff, routing exhausted events to the DLQ, persisting to Mongo. (ES is indexed downstream from the outbox by the EsIndexer.) | Request handling. Its scaling signal is queue depth, not HTTP traffic. |
 | **MongoDB** | **Source of truth.** Flexible event documents (`metadata` is schemaless) and the aggregation pipelines behind `/stats`. | Full-text search. |
 | **Elasticsearch** | Search over `metadata` (conflict-free `flattened`, keyword leaves) and full-text/analytics queries (`/search`). A **derived mirror**, not the system of record. | Being authoritative. If ES and Mongo disagree, Mongo wins. |
 | **Redis** | Caching the `/stats/realtime` summary; natural home for rate-limit counters. | Durable state. Configured cache-only (no persistence). |
@@ -106,15 +106,19 @@ Three stores because three genuinely different access patterns:
   tolerates being a few seconds stale, which is the textbook case for a TTL
   cache. Serving it from Redis takes load off Mongo's aggregation path entirely.
 
-**The honest seam: dual write.** The worker writes each event to *both* Mongo
-and ES. There is no distributed transaction across them, so a crash between the
-two writes leaves them inconsistent (an event in Mongo but not ES, or vice
-versa). For this assignment we accept best-effort eventual consistency and make
-the risk explicit. The production answer is to make ES strictly downstream of
-Mongo — via an **outbox table** the worker reads, or **MongoDB change streams**
-feeding the ES indexer — so Mongo's write is the single commit point and ES
-catches up asynchronously. (Change streams require a replica set, which the
-single-node local Mongo is not — noted for §10.)
+**ES is downstream of Mongo (outbox).** The worker writes only to Mongo,
+stamping each event with an `es_indexed=false` marker in the same (atomic,
+single-document) insert. A background **`EsIndexer`** polls that outbox,
+bulk-indexes pending events to ES, and flips the marker *only on success* — so
+Mongo's write is the single commit point and ES catches up asynchronously and
+**durably**: a crash or ES outage leaves events un-indexed and retried on the
+next pass rather than silently diverging. This replaces the original dual-write
+seam (an event committed to Mongo but lost before ES). The residual limit is
+small and benign: the marker flip is a separate write, so a crash between
+indexing and flipping can re-index an event — harmless because ES indexing is
+idempotent on `event_id` (the document `_id`). MongoDB change streams would be
+the push-based alternative but require a replica set, which the single-node
+local Mongo is not (noted for §10).
 
 ---
 
@@ -222,10 +226,11 @@ notes.)_
   this window, so batch size is a tunable tradeoff between throughput and
   blast radius. A real broker's visibility-timeout redelivery closes this gap.
 - **Elasticsearch unavailable.** Mongo write still succeeds (source of truth
-  intact); the ES index fails and is logged as best-effort — not retried or sent
-  to the DLQ (only Mongo failures are), and a single malformed document no longer
-  discards the rest of its batch. `/search` degrades or errors,
-  but no authoritative data is lost — ES can be reindexed from Mongo later.
+  intact). Events stay marked `es_indexed=false` in the outbox; the EsIndexer
+  retries them every poll until ES recovers, so ES catches up on its own rather
+  than needing a manual reindex. A single malformed document is logged and
+  skipped (`raise_on_error=False`) without discarding the rest of its batch.
+  `/search` degrades or errors meanwhile, but no authoritative data is lost.
 - **Redis unavailable.** `/stats/realtime` falls back to computing from Mongo
   (slower) or returns a clearly-degraded response. Cache loss is never data loss.
 - **Queue full.** Producers get backpressure (`429`/`503`) — a deliberate,
@@ -308,8 +313,10 @@ is the whole point.
 
 - **Durable broker from day one** (SQS or Kafka) — removes the single largest
   risk in the current design.
-- **ES strictly downstream of Mongo** via outbox or change streams, eliminating
-  the dual-write inconsistency in §4.
+- **ES strictly downstream of Mongo** — *implemented* via a Mongo outbox (the
+  `es_indexed` marker, drained by the EsIndexer), eliminating the §4 dual-write
+  seam. Change streams (push-based) would be the alternative but need a replica
+  set.
 - **Precomputed stats rollups** — *implemented* for the unfiltered `/stats`: a
   background task refreshes an all-time per-`event_type` count document on an
   interval, so the hot path is one O(1) read instead of an on-read aggregation

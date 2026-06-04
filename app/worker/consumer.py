@@ -1,12 +1,13 @@
-"""Async worker pool: drains the event queue, batches, retries, and dual-writes.
+"""Async worker pool: drains the event queue, batches, and persists to MongoDB.
 
 Design notes (see ARCHITECTURE.md §5 for the full rationale):
 - N concurrent consumer tasks run inside the FastAPI process via asyncio.
 - Each task drains the queue in batches (up to WORKER_BATCH_SIZE).
 - Mongo write failures are retried with exponential backoff + jitter.
 - Events that exhaust MAX_RETRIES are moved to the in-memory DLQ.
-- ES indexing is best-effort: a Mongo write that succeeds is never rolled back
-  because ES failed — ES is the derived mirror, Mongo is the source of truth.
+- The worker writes only to Mongo (the source of truth). ES is populated
+  strictly downstream by the EsIndexer reading the outbox (es_indexed flag),
+  so there is no in-line dual write to diverge on a crash (§4).
 - Graceful shutdown: set _stop_event, await queue.join() (drain with timeout),
   then cancel remaining tasks.
 """
@@ -23,21 +24,19 @@ from app.queue.dlq import DeadLetterQueue
 from app.queue.event_queue import EventQueue
 
 if TYPE_CHECKING:
-    from app.storage.es import ElasticsearchStore
     from app.storage.mongo import MongoStore
 
 logger = logging.getLogger(__name__)
 
 
 class WorkerPool:
-    """N concurrent consumer tasks that dual-write events to MongoDB and ES."""
+    """N concurrent consumer tasks that persist queued events to MongoDB."""
 
     def __init__(
         self,
         queue: EventQueue,
         dlq: DeadLetterQueue,
         mongo: "MongoStore",
-        es: "ElasticsearchStore",
         batch_size: int,
         max_retries: int,
         base_delay: float,
@@ -48,7 +47,6 @@ class WorkerPool:
             queue: Source queue the consumers drain.
             dlq: Dead-letter queue for events that exhaust their retries.
             mongo: Source-of-truth store for the bulk write.
-            es: Derived search mirror for best-effort indexing.
             batch_size: Maximum number of events per Mongo bulk write.
             max_retries: Maximum Mongo write retries before routing to the DLQ.
             base_delay: Base seconds for the exponential backoff between retries.
@@ -56,7 +54,6 @@ class WorkerPool:
         self._queue = queue
         self._dlq = dlq
         self._mongo = mongo
-        self._es = es
         self._batch_size = batch_size
         self._max_retries = max_retries
         self._base_delay = base_delay
@@ -66,7 +63,6 @@ class WorkerPool:
         self._events_processed = 0
         self._batches_processed = 0
         self._retries = 0
-        self._es_index_failures = 0
 
     def metrics(self) -> dict[str, int]:
         """Return a snapshot of the worker's processing counters."""
@@ -74,7 +70,6 @@ class WorkerPool:
             "events_processed": self._events_processed,
             "batches_processed": self._batches_processed,
             "retries": self._retries,
-            "es_index_failures": self._es_index_failures,
         }
 
     async def start(self, concurrency: int) -> None:
@@ -147,13 +142,15 @@ class WorkerPool:
                     self._queue.task_done()
 
     async def _process_batch(self, batch: list[EventDocument]) -> None:
-        """Write a batch to Mongo with retry/backoff, then best-effort index to ES.
+        """Write a batch to Mongo with retry/backoff; ES is handled downstream.
+
+        Events are stored with an ``es_indexed=False`` marker; the EsIndexer
+        reads that outbox and populates ES separately, so the worker never
+        dual-writes (§4).
 
         Args:
             batch: The events to persist. If the Mongo write exhausts its
-                retries, every event is routed to the DLQ and ES indexing is
-                skipped; an ES failure after a successful Mongo write is logged
-                and swallowed (ES is a derived mirror).
+                retries, every event is routed to the DLQ.
         """
         # --- Mongo write: source of truth; retry until exhausted ---
         last_exc: Exception | None = None
@@ -188,16 +185,7 @@ class WorkerPool:
             )
             for event in batch:
                 self._dlq.push(event, str(last_exc))
-            return  # Do NOT attempt ES if Mongo failed.
+            return
 
         self._batches_processed += 1
         self._events_processed += len(batch)
-
-        # --- ES: best-effort; failure here does not lose authoritative data ---
-        try:
-            await self._es.bulk_index(batch)
-        except Exception as exc:
-            self._es_index_failures += 1
-            logger.warning(
-                "ES indexing failed (non-fatal, Mongo write succeeded): %s", exc
-            )

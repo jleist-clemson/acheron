@@ -75,6 +75,8 @@ class MongoStore:
         # limit on large collections. (Beyond ARCHITECTURE.md §6's compound
         # indexes, which only cover the filtered query paths.)
         await coll.create_index([("timestamp", -1)], background=True)
+        # Serves the EsIndexer's scan for events still pending ES indexing.
+        await coll.create_index([("es_indexed", 1)], background=True)
         logger.info("MongoDB indexes ensured")
 
     async def ping(self) -> bool:
@@ -157,7 +159,7 @@ class MongoStore:
 
         # Fetch one extra to detect a further page without a separate count.
         cursor = (
-            self._collection.find(filt, {"_id": 0})
+            self._collection.find(filt, {"_id": 0, "es_indexed": 0})
             .sort("timestamp", -1)
             .skip(offset)
             .limit(limit + 1)
@@ -285,6 +287,40 @@ class MongoStore:
         """Return the precomputed event_type rollup, or None if not yet computed."""
         return await self._rollups_collection.find_one({"_id": _ROLLUP_ID}, {"_id": 0})
 
+    async def fetch_unindexed(self, limit: int) -> list[dict[str, Any]]:
+        """Return up to *limit* events not yet indexed in ES, oldest first.
+
+        This is the outbox read backing the EsIndexer (ARCHITECTURE.md §4). The
+        internal ``es_indexed`` marker is projected out so the dicts match the
+        event shape.
+
+        Args:
+            limit: Maximum number of pending events to return.
+
+        Returns:
+            Event documents awaiting ES indexing (``_id``/``es_indexed`` removed).
+        """
+        cursor = (
+            self._collection.find(
+                {"es_indexed": False}, {"_id": 0, "es_indexed": 0}
+            )
+            .sort("received_at", 1)
+            .limit(limit)
+        )
+        return await cursor.to_list(length=limit)
+
+    async def mark_indexed(self, event_ids: list[str]) -> None:
+        """Mark the given events as indexed in ES.
+
+        Args:
+            event_ids: The ``event_id``s that were successfully indexed.
+        """
+        if not event_ids:
+            return
+        await self._collection.update_many(
+            {"_id": {"$in": event_ids}}, {"$set": {"es_indexed": True}}
+        )
+
 
 def _dedupe_by_id(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop documents with a repeated ``_id``, keeping the first occurrence.
@@ -336,4 +372,5 @@ def _to_doc(event: EventDocument) -> dict[str, Any]:
     """
     d = event.model_dump()  # native Python types; Motor handles datetime → BSON Date
     d["_id"] = d["event_id"]  # idempotent inserts — duplicate _id = skip
+    d["es_indexed"] = False  # outbox marker; the EsIndexer flips it once in ES
     return d

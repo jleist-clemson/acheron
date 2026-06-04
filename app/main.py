@@ -24,6 +24,7 @@ from app.queue.event_queue import EventQueue
 from app.storage.es import ElasticsearchStore
 from app.storage.mongo import MongoStore
 from app.worker.consumer import WorkerPool
+from app.worker.es_indexer import EsIndexer
 from app.worker.rollup import RollupScheduler
 
 # Instantiate config and configure logging at import time so log lines from
@@ -79,12 +80,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         queue=queue,
         dlq=dlq,
         mongo=mongo,
-        es=es,
         batch_size=settings.worker_batch_size,
         max_retries=settings.max_retries,
         base_delay=settings.retry_base_delay_seconds,
     )
     await worker.start(settings.worker_concurrency)
+
+    # ES is populated strictly downstream of Mongo via the outbox (§4).
+    es_indexer = EsIndexer(
+        mongo, es, settings.worker_batch_size, settings.es_index_interval_seconds
+    )
+    await es_indexer.start()
 
     rollup = RollupScheduler(mongo, settings.rollup_interval_seconds)
     await rollup.start()
@@ -99,6 +105,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.queue = queue
     app.state.worker = worker
     app.state.rollup = rollup
+    app.state.es_indexer = es_indexer
 
     logger.info("Startup complete — accepting requests")
     yield
@@ -110,6 +117,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     ingestion.stop_accepting()
     logger.info("No longer accepting new events; draining in-flight queue")
     await worker.stop(drain_timeout=30.0)
+    await es_indexer.stop()
     await rollup.stop()
     mongo.close()           # Motor close() is synchronous
     await es.close()
@@ -121,7 +129,8 @@ app = FastAPI(
     title="Acheron — Distributed Event Processing Platform",
     description=(
         "High-volume event ingestion via a bounded in-process queue, "
-        "async dual-write to MongoDB (source of truth) + Elasticsearch (search mirror), "
+        "persistence to MongoDB (source of truth) with Elasticsearch indexed "
+        "downstream via an outbox, "
         "and Redis-cached realtime statistics."
     ),
     version="0.1.0",

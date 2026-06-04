@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     realtime_window_seconds: int = 300
     # How often the background task recomputes the /events/stats rollup.
     rollup_interval_seconds: int = 60
+    # Poll interval for the ES outbox indexer when the backlog is empty.
+    es_index_interval_seconds: int = 5
 
     # --- observability ---
     log_level: str = "INFO"

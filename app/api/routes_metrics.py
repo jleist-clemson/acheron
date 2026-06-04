@@ -20,12 +20,14 @@ async def metrics(request: Request) -> dict[str, Any]:
         request: The incoming request; components are read from ``app.state``.
 
     Returns:
-        ``{"queue": {...}, "dlq": {...}, "worker": {...}, "cache": {...}}``.
+        ``{"queue": {...}, "dlq": {...}, "worker": {...}, "es_indexer": {...},
+        "cache": {...}}``.
     """
     state = request.app.state
     return {
         "queue": {"depth": state.queue.qsize, "capacity": state.queue.maxsize},
         "dlq": {"size": state.dlq.size},
         "worker": state.worker.metrics(),
+        "es_indexer": state.es_indexer.metrics(),
         "cache": state.redis_cache.metrics(),
     }
