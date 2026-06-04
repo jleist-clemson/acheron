@@ -24,6 +24,7 @@ from app.queue.event_queue import EventQueue
 from app.storage.es import ElasticsearchStore
 from app.storage.mongo import MongoStore
 from app.worker.consumer import WorkerPool
+from app.worker.rollup import RollupScheduler
 
 # Instantiate config and configure logging at import time so log lines from
 # startup are formatted correctly before the lifespan hook runs.
@@ -85,6 +86,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await worker.start(settings.worker_concurrency)
 
+    rollup = RollupScheduler(mongo, settings.rollup_interval_seconds)
+    await rollup.start()
+
     # Expose to route handlers via request.app.state.
     app.state.settings = settings
     app.state.ingestion = ingestion
@@ -94,6 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.dlq = dlq
     app.state.queue = queue
     app.state.worker = worker
+    app.state.rollup = rollup
 
     logger.info("Startup complete — accepting requests")
     yield
@@ -105,6 +110,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     ingestion.stop_accepting()
     logger.info("No longer accepting new events; draining in-flight queue")
     await worker.stop(drain_timeout=30.0)
+    await rollup.stop()
     mongo.close()           # Motor close() is synchronous
     await es.close()
     await redis_cache.close()

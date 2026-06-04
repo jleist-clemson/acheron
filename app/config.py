@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     # Look-back window the /events/stats/realtime summary covers. Distinct from
     # the cache TTL above (which governs freshness, not the data window).
     realtime_window_seconds: int = 300
+    # How often the background task recomputes the /events/stats rollup.
+    rollup_interval_seconds: int = 60
 
     # --- observability ---
     log_level: str = "INFO"

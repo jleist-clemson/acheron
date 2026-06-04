@@ -60,7 +60,7 @@ uvicorn app.main:app --reload
 |--------|------|-------------|
 | `POST` | `/events` | Ingest an event → 202 with `event_id`. Optional `Idempotency-Key` header dedupes repeat submissions |
 | `GET` | `/events` | Filter by `event_type`, `user_id`, `source_url`, `from`, `to` with `limit`/`offset`; returns `has_more` (exact count only with `with_total=true`) |
-| `GET` | `/events/stats` | Event counts grouped by `event_type`; optional `from`/`to` range and `interval=minute\|hour\|day` time-bucketing |
+| `GET` | `/events/stats` | Event counts grouped by `event_type`; unfiltered call served from a precomputed rollup (`source` field), `from`/`to` + `interval=minute\|hour\|day` fall back to live aggregation |
 | `GET` | `/events/stats/realtime` | Per-type counts over a recent window, cache-aside via Redis (degrades to Mongo if Redis is down) |
 | `GET` | `/events/search` | Search via Elasticsearch: free text (`?q=`) and/or filters (`event_type`, `user_id`, `source_url`, `from`, `to`) with `size`/`offset` |
 | `GET` | `/health` | Liveness probe |

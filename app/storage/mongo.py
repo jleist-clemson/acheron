@@ -13,6 +13,8 @@ from app.models import EventDocument
 logger = logging.getLogger(__name__)
 
 _COLLECTION = "events"
+_ROLLUPS = "rollups"
+_ROLLUP_ID = "event_type_counts"
 
 
 class MongoStore:
@@ -51,6 +53,12 @@ class MongoStore:
         if self._client is None:
             raise RuntimeError("MongoStore.connect() has not been called")
         return self._client[self._db_name][_COLLECTION]
+
+    @property
+    def _rollups_collection(self) -> AsyncIOMotorCollection:
+        if self._client is None:
+            raise RuntimeError("MongoStore.connect() has not been called")
+        return self._client[self._db_name][_ROLLUPS]
 
     async def ensure_indexes(self) -> None:
         """Idempotently create the indexes described in ARCHITECTURE.md §6."""
@@ -251,6 +259,31 @@ class MongoStore:
             "total": sum(row["count"] for row in by_type),
             "by_type": by_type,
         }
+
+    async def refresh_event_type_rollup(self) -> dict[str, Any]:
+        """Recompute the all-time per-``event_type`` rollup and upsert it.
+
+        Run periodically by the rollup scheduler so the unfiltered ``/stats``
+        call can be served from one precomputed document instead of scanning raw
+        events on every request (ARCHITECTURE.md §11).
+
+        Returns:
+            The rollup document that was stored.
+        """
+        counts = await self.aggregate_counts()  # unfiltered, all-time
+        doc = {
+            "counts": counts,
+            "total": sum(row["count"] for row in counts),
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await self._rollups_collection.update_one(
+            {"_id": _ROLLUP_ID}, {"$set": doc}, upsert=True
+        )
+        return doc
+
+    async def get_event_type_rollup(self) -> Optional[dict[str, Any]]:
+        """Return the precomputed event_type rollup, or None if not yet computed."""
+        return await self._rollups_collection.find_one({"_id": _ROLLUP_ID}, {"_id": 0})
 
 
 def _dedupe_by_id(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:

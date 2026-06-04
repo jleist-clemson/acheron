@@ -76,6 +76,7 @@ def _stores() -> Iterator[None]:
         )
         # Nothing listens here -> ES is deterministically "down" (degraded path).
         os.environ["ELASTICSEARCH_URL"] = "http://localhost:59201"
+        os.environ["ROLLUP_INTERVAL_SECONDS"] = "1"  # refresh fast so /stats tests don't wait
         # Re-import app.main so its module-level Settings() reads the container env.
         sys.modules.pop("app.main", None)
         yield
@@ -93,8 +94,9 @@ async def client(_stores: None) -> AsyncIterator[httpx.AsyncClient]:
     import app.main as main
 
     async with LifespanManager(main.app):
-        # Isolate each test: empty the events collection and the realtime cache.
+        # Isolate each test: empty the events + rollups collections and the cache.
         await main.app.state.mongo._collection.delete_many({})
+        await main.app.state.mongo._rollups_collection.delete_many({})
         await main.app.state.redis_cache._redis.flushdb()
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
@@ -198,11 +200,26 @@ async def test_stats_aggregation(client: httpx.AsyncClient) -> None:
         )
 
     await _poll(client, "/events", {}, lambda d: len(d["events"]) >= 5)
-    stats = (await client.get("/events/stats")).json()
+
+    # The rollup refreshes on an interval (1s in tests); poll until the
+    # precomputed /stats reflects the just-ingested events.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 10
+    stats: dict = {}
+    while loop.time() < deadline:
+        stats = (await client.get("/events/stats")).json()
+        counts = {row["event_type"]: row["count"] for row in stats["data"]}
+        if stats.get("source") == "rollup" and counts.get(a) == 3 and counts.get(b) == 2:
+            break
+        await asyncio.sleep(0.1)
     counts = {row["event_type"]: row["count"] for row in stats["data"]}
+    assert stats["source"] == "rollup"  # served from the precomputed rollup
     assert counts.get(a) == 3
     assert counts.get(b) == 2
-    assert stats["total"] >= 5
+
+    # A bucketed query bypasses the rollup with an exact live aggregation.
+    live = (await client.get("/events/stats", params={"interval": "hour"})).json()
+    assert live["source"] == "live"
 
 
 async def test_realtime_stats_cache_miss_then_hit(client: httpx.AsyncClient) -> None:

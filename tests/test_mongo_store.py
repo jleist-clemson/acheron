@@ -19,6 +19,27 @@ def _store_with_collection() -> tuple[MongoStore, AsyncMock]:
     return store, coll
 
 
+def _store_with_aggregate(rows: list[dict]) -> tuple[MongoStore, MagicMock]:
+    """Wire aggregate().to_list() -> rows, plus update_one/find_one on the collection."""
+    store = MongoStore("mongodb://x:27017", "db")
+    cursor = MagicMock()
+    cursor.to_list = AsyncMock(return_value=rows)
+    coll = MagicMock()
+    coll.aggregate.return_value = cursor
+    coll.update_one = AsyncMock()
+    coll.find_one = AsyncMock(
+        return_value={
+            "counts": rows,
+            "total": sum(r["count"] for r in rows),
+            "computed_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+    client = MagicMock()
+    client.__getitem__.return_value.__getitem__.return_value = coll
+    store._client = client
+    return store, coll
+
+
 def _store_with_find(docs: list[dict]) -> tuple[MongoStore, MagicMock, MagicMock]:
     """Wire find().sort().skip().limit().to_list() -> docs, plus count_documents."""
     store = MongoStore("mongodb://x:27017", "db")
@@ -79,3 +100,28 @@ async def test_find_events_with_total_runs_count() -> None:
     assert has_more is False
     assert total == 999
     coll.count_documents.assert_awaited_once()
+
+
+async def test_refresh_event_type_rollup_upserts_counts() -> None:
+    store, coll = _store_with_aggregate(
+        [{"event_type": "a", "count": 3}, {"event_type": "b", "count": 2}]
+    )
+
+    doc = await store.refresh_event_type_rollup()
+
+    assert doc["total"] == 5
+    assert doc["counts"] == [
+        {"event_type": "a", "count": 3},
+        {"event_type": "b", "count": 2},
+    ]
+    coll.update_one.assert_awaited_once()
+    assert coll.update_one.await_args.kwargs.get("upsert") is True
+
+
+async def test_get_event_type_rollup_returns_stored_doc() -> None:
+    store, coll = _store_with_aggregate([{"event_type": "a", "count": 1}])
+
+    got = await store.get_event_type_rollup()
+
+    assert got["total"] == 1
+    coll.find_one.assert_awaited_once()

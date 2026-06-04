@@ -310,8 +310,12 @@ is the whole point.
   risk in the current design.
 - **ES strictly downstream of Mongo** via outbox or change streams, eliminating
   the dual-write inconsistency in §4.
-- **Precomputed stats rollups** instead of on-read aggregation, making both
-  `/stats` and the realtime cache cheaper and more predictable.
+- **Precomputed stats rollups** — *implemented* for the unfiltered `/stats`: a
+  background task refreshes an all-time per-`event_type` count document on an
+  interval, so the hot path is one O(1) read instead of an on-read aggregation
+  (filtered/bucketed queries still run live). The realtime cache could similarly
+  move to write-through refresh; on-read aggregation remains for parameterized
+  queries.
 - **Schema/versioning on events** — *implemented*: events carry a
   producer-declared `schema_version` (default 1), stored and indexed, so
   `metadata` shape changes don't silently break consumers. A fuller version

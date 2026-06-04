@@ -99,6 +99,11 @@ async def get_stats(
 ) -> dict[str, Any]:
     """Aggregate event counts per ``event_type`` (ARCHITECTURE.md §4/§6).
 
+    The unfiltered, non-bucketed call is served from a precomputed rollup
+    (cheap, refreshed on an interval — ``source: "rollup"`` with ``computed_at``);
+    any filter or ``interval`` falls back to an exact live aggregation
+    (``source: "live"``).
+
     Args:
         from_ts: Inclusive lower bound on ``timestamp`` (``from`` query param).
         to_ts: Inclusive upper bound on ``timestamp`` (``to`` query param).
@@ -106,12 +111,23 @@ async def get_stats(
         mongo: MongoDB store (injected).
 
     Returns:
-        ``{"data": [...], "total": <int>, "interval": <str|None>}``.
+        ``{"data": [...], "total": <int>, "interval": <str|None>, "source": <str>}``
+        (plus ``computed_at`` when served from the rollup).
 
     Raises:
         HTTPException: 503 if the Mongo aggregation is unavailable.
     """
     try:
+        if from_ts is None and to_ts is None and interval is None:
+            rollup = await mongo.get_event_type_rollup()
+            if rollup is not None:
+                return {
+                    "data": rollup["counts"],
+                    "total": rollup["total"],
+                    "interval": None,
+                    "source": "rollup",
+                    "computed_at": rollup["computed_at"],
+                }
         data = await mongo.aggregate_counts(
             from_ts=from_ts, to_ts=to_ts, interval=interval
         )
@@ -125,6 +141,7 @@ async def get_stats(
         "data": data,
         "total": sum(row["count"] for row in data),
         "interval": interval,
+        "source": "live",
     }
 
 
