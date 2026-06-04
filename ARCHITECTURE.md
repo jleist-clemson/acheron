@@ -195,6 +195,7 @@ notes.)_
 **Elasticsearch mapping**
 
 - `event_type`, `user_id` → `keyword` (exact match, aggregations, no analysis).
+- `schema_version` → `integer` (producer-declared event schema version).
 - `timestamp` → `date`.
 - `source_url` → `keyword` with a `text` sub-field for partial/tokenized search.
 - `metadata` → `flattened`. The whole object is indexed as a single field of
@@ -311,8 +312,10 @@ is the whole point.
   the dual-write inconsistency in §4.
 - **Precomputed stats rollups** instead of on-read aggregation, making both
   `/stats` and the realtime cache cheaper and more predictable.
-- **Schema/versioning on events** so `metadata` shape changes don't silently
-  break consumers.
+- **Schema/versioning on events** — *implemented*: events carry a
+  producer-declared `schema_version` (default 1), stored and indexed, so
+  `metadata` shape changes don't silently break consumers. A fuller version
+  would add per-version validation/migration of the `metadata` payload.
 - **Observability:** structured logs (in place), plus metrics (queue depth,
   retry counts, DLQ size, cache hit rate) and tracing across the ingest path.
 - **Idempotency keys** on ingest — *implemented*: an optional `Idempotency-Key`

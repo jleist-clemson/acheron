@@ -24,6 +24,7 @@ _MAPPING = {
             "event_id":   {"type": "keyword"},
             "event_type": {"type": "keyword"},
             "user_id":    {"type": "keyword"},
+            "schema_version": {"type": "integer"},
             "timestamp":  {"type": "date"},
             "received_at": {"type": "date"},
             "source_url": {

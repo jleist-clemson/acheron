@@ -128,3 +128,19 @@ async def test_distinct_keys_and_no_key_yield_distinct_event_ids() -> None:
     )
     # No key -> a fresh uuid4 each time (every call is a distinct event).
     assert service.ingest(event).event_id != service.ingest(event).event_id
+
+
+async def test_ingest_preserves_schema_version() -> None:
+    service = IngestionService(EventQueue(max_size=10))
+
+    default = service.ingest(
+        EventCreate(event_type="x", user_id="u", source_url="https://t.test")
+    )
+    assert default.schema_version == 1  # defaulted when the producer omits it
+
+    explicit = service.ingest(
+        EventCreate(
+            event_type="x", user_id="u", source_url="https://t.test", schema_version=2
+        )
+    )
+    assert explicit.schema_version == 2

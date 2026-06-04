@@ -18,6 +18,14 @@ class EventCreate(BaseModel):
     user_id: str
     source_url: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    schema_version: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Producer-declared schema version of this event (esp. its metadata "
+            "shape), so consumers can interpret it across changes. Defaults to 1."
+        ),
+    )
 
 
 class EventDocument(EventCreate):

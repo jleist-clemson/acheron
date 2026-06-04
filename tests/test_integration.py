@@ -138,6 +138,7 @@ async def test_ingest_then_read_round_trip(client: httpx.AsyncClient) -> None:
     assert event["user_id"] == "alice"
     assert event["metadata"] == {"k": "v"}
     assert event["received_at"]  # server-assigned on ingest
+    assert event["schema_version"] == 1  # defaulted when omitted
 
 
 async def test_idempotency_key_dedupes_duplicate_submissions(
