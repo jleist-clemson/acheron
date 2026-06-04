@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 from app.api.routes_events import router as events_router
 from app.api.routes_health import router as health_router
+from app.api.routes_metrics import router as metrics_router
 from app.cache.redis_cache import RedisCache
 from app.config import Settings
 from app.ingestion.service import IngestionService
@@ -91,6 +92,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.es = es
     app.state.redis_cache = redis_cache
     app.state.dlq = dlq
+    app.state.queue = queue
+    app.state.worker = worker
 
     logger.info("Startup complete — accepting requests")
     yield
@@ -120,4 +123,5 @@ app = FastAPI(
 )
 
 app.include_router(health_router)
+app.include_router(metrics_router)
 app.include_router(events_router)

@@ -75,3 +75,8 @@ class EventQueue:
     def qsize(self) -> int:
         """Number of events currently buffered in the queue."""
         return self._q.qsize()
+
+    @property
+    def maxsize(self) -> int:
+        """Maximum number of events the queue can hold before backpressure."""
+        return self._q.maxsize

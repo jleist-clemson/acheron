@@ -65,6 +65,7 @@ uvicorn app.main:app --reload
 | `GET` | `/events/search` | Search via Elasticsearch: free text (`?q=`) and/or filters (`event_type`, `user_id`, `source_url`, `from`, `to`) with `size`/`offset` |
 | `GET` | `/health` | Liveness probe |
 | `GET` | `/health/ready` | Readiness probe — pings all three stores |
+| `GET` | `/metrics` | Operational snapshot: queue depth, DLQ size, worker throughput/retries, cache hit rate |
 
 Interactive docs: `http://localhost:8000/docs`
 

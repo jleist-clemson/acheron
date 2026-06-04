@@ -62,6 +62,20 @@ class WorkerPool:
         self._base_delay = base_delay
         self._stop_event = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
+        # Lightweight in-process counters surfaced at GET /metrics.
+        self._events_processed = 0
+        self._batches_processed = 0
+        self._retries = 0
+        self._es_index_failures = 0
+
+    def metrics(self) -> dict[str, int]:
+        """Return a snapshot of the worker's processing counters."""
+        return {
+            "events_processed": self._events_processed,
+            "batches_processed": self._batches_processed,
+            "retries": self._retries,
+            "es_index_failures": self._es_index_failures,
+        }
 
     async def start(self, concurrency: int) -> None:
         """Spawn the consumer tasks.
@@ -152,6 +166,7 @@ class WorkerPool:
                 last_exc = exc
                 if attempt == self._max_retries:
                     break
+                self._retries += 1
                 # Exponential backoff with *full* jitter (AWS-style): sleep a
                 # random duration in [0, base * 2**attempt) so concurrent
                 # workers' retries de-correlate and don't form a thundering herd.
@@ -175,10 +190,14 @@ class WorkerPool:
                 self._dlq.push(event, str(last_exc))
             return  # Do NOT attempt ES if Mongo failed.
 
+        self._batches_processed += 1
+        self._events_processed += len(batch)
+
         # --- ES: best-effort; failure here does not lose authoritative data ---
         try:
             await self._es.bulk_index(batch)
         except Exception as exc:
+            self._es_index_failures += 1
             logger.warning(
                 "ES indexing failed (non-fatal, Mongo write succeeded): %s", exc
             )

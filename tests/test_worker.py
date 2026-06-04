@@ -126,6 +126,22 @@ async def test_es_failure_is_best_effort_and_does_not_dlq() -> None:
 # --------------------------------------------------------------------------- #
 
 
+async def test_metrics_count_processing_retries_and_es_failures() -> None:
+    mongo = AsyncMock()
+    mongo.bulk_write.side_effect = [RuntimeError("down"), None]  # one retry, then ok
+    es = AsyncMock()
+    es.bulk_index.side_effect = RuntimeError("es down")  # best-effort failure
+    pool, dlq, mongo, es = _worker(mongo=mongo, es=es, max_retries=3)
+
+    await pool._process_batch([make_event(), make_event()])
+
+    m = pool.metrics()
+    assert m["events_processed"] == 2
+    assert m["batches_processed"] == 1
+    assert m["retries"] == 1
+    assert m["es_index_failures"] == 1
+
+
 async def test_worker_drains_in_flight_queue_on_stop() -> None:
     queue = EventQueue(max_size=100)
     pool, dlq, mongo, es = _worker(queue=queue, batch_size=10)

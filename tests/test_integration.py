@@ -219,6 +219,21 @@ async def test_realtime_stats_cache_miss_then_hit(client: httpx.AsyncClient) -> 
     assert second["data"]["total"] == first["data"]["total"]
 
 
+async def test_metrics_endpoint_reports_pipeline_state(client: httpx.AsyncClient) -> None:
+    et = f"itest_{uuid.uuid4().hex[:8]}"
+    await client.post(
+        "/events", json={"event_type": et, "user_id": "x", "source_url": "https://t.test"}
+    )
+    await _poll(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
+
+    m = (await client.get("/metrics")).json()
+    assert m["queue"]["capacity"] >= 1
+    assert m["queue"]["depth"] == 0  # drained
+    assert m["worker"]["events_processed"] >= 1
+    assert m["dlq"]["size"] == 0
+    assert "hit_rate" in m["cache"]
+
+
 async def test_health_ready_reports_es_degraded(client: httpx.AsyncClient) -> None:
     resp = await client.get("/health/ready")
     body = resp.json()

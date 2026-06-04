@@ -21,6 +21,17 @@ class RedisCache:
         """
         self._url = url
         self._redis: Optional[Redis] = None
+        self._hits = 0
+        self._misses = 0
+
+    def metrics(self) -> dict[str, float]:
+        """Return cache-aside hit/miss counts and the hit rate."""
+        total = self._hits + self._misses
+        return {
+            "hits": self._hits,
+            "misses": self._misses,
+            "hit_rate": (self._hits / total) if total else 0.0,
+        }
 
     async def connect(self) -> None:
         """Open the async Redis connection and validate it with a PING."""
@@ -91,10 +102,12 @@ class RedisCache:
         try:
             cached = await self._redis.get(key)
             if cached is not None:
+                self._hits += 1
                 return json.loads(cached), True
         except Exception as exc:
             logger.warning("Redis GET failed for '%s'; recomputing: %s", key, exc)
 
+        self._misses += 1
         value = await factory()
 
         try:

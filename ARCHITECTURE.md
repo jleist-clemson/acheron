@@ -316,8 +316,10 @@ is the whole point.
   producer-declared `schema_version` (default 1), stored and indexed, so
   `metadata` shape changes don't silently break consumers. A fuller version
   would add per-version validation/migration of the `metadata` payload.
-- **Observability:** structured logs (in place), plus metrics (queue depth,
-  retry counts, DLQ size, cache hit rate) and tracing across the ingest path.
+- **Observability:** structured logs (in place) and metrics — *implemented* as a
+  JSON `GET /metrics` snapshot (queue depth, retry counts, DLQ size, cache hit
+  rate). Still to add: Prometheus-format exposition and distributed tracing
+  across the ingest path.
 - **Idempotency keys** on ingest — *implemented*: an optional `Idempotency-Key`
   header maps to a deterministic `event_id` (`uuid5`), so duplicate submissions
   collapse at the Mongo write. A fuller version would persist a key→response
