@@ -217,9 +217,16 @@ async def test_stats_aggregation(client: httpx.AsyncClient) -> None:
     assert counts.get(a) == 3
     assert counts.get(b) == 2
 
-    # A bucketed query bypasses the rollup with an exact live aggregation.
-    live = (await client.get("/events/stats", params={"interval": "hour"})).json()
-    assert live["source"] == "live"
+    # Bucketed queries bypass the rollup with an exact live aggregation.
+    for unit in ("hour", "day", "week"):
+        live = (await client.get("/events/stats", params={"interval": unit})).json()
+        assert live["source"] == "live"
+        assert live["total"] == 5
+        assert all("bucket" in row for row in live["data"])
+
+    # An unsupported bucket unit is rejected by validation.
+    bad = await client.get("/events/stats", params={"interval": "year"})
+    assert bad.status_code == 422
 
 
 async def test_realtime_stats_cache_miss_then_hit(client: httpx.AsyncClient) -> None:

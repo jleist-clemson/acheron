@@ -92,8 +92,8 @@ async def get_stats(
     to_ts: Optional[datetime] = Query(None, alias="to"),
     interval: Optional[str] = Query(
         None,
-        pattern="^(minute|hour|day)$",
-        description="Optionally bucket counts by time: minute | hour | day",
+        pattern="^(minute|hour|day|week)$",
+        description="Optionally bucket counts by time: minute | hour | day | week",
     ),
     mongo: MongoStore = Depends(_mongo),
 ) -> dict[str, Any]:
@@ -107,7 +107,8 @@ async def get_stats(
     Args:
         from_ts: Inclusive lower bound on ``timestamp`` (``from`` query param).
         to_ts: Inclusive upper bound on ``timestamp`` (``to`` query param).
-        interval: Optional time-bucket unit: ``minute``, ``hour``, or ``day``.
+        interval: Optional time-bucket unit: ``minute``, ``hour``, ``day``, or
+            ``week``.
         mongo: MongoDB store (injected).
 
     Returns:
