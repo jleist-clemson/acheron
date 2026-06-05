@@ -106,13 +106,15 @@ pytest -m integration -v
 ```
 
 `test_integration.py` covers the end-to-end POST → worker → GET round-trip,
-filters/pagination, the `/stats` aggregation, the Redis cache-aside miss→hit, and
-— with Elasticsearch pointed at a dead address — the graceful-degradation
-contract (`/search` → 502, readiness reports ES down, durable pipeline intact).
+idempotency dedup, filters/pagination, the `/stats` aggregation (incl. weekly
+buckets), the Redis cache-aside miss→hit, rate limiting (429), and — with
+Elasticsearch pointed at a dead address — the graceful-degradation contract
+(`/search` → 502, readiness stays `degraded` not 503, durable pipeline intact).
 
-**Still planned:** a dedicated Elasticsearch container + indexing/search contract
-test (ES query building and the mapping are currently covered by unit tests and
-were verified manually against a live cluster).
+`test_integration_es.py` adds a **real Elasticsearch container**: it indexes an
+event downstream via the outbox/`EsIndexer` and asserts `/events/search` returns
+it — including a term that appears *only* in metadata — plus an index-mapping
+contract check (`metadata` `flattened`, `metadata_text` `text`).
 
 ---
 
