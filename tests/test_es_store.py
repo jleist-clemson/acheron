@@ -65,6 +65,8 @@ async def test_ensure_mapping_indexes_metadata_as_flattened() -> None:
 
     client.indices.create.assert_awaited_once()
     props = client.indices.create.await_args.kwargs["mappings"]["properties"]
-    # flattened avoids the dynamic-object mapping conflict on schemaless metadata.
+    # flattened avoids the dynamic-object mapping conflict on schemaless metadata,
+    # while metadata_text gives analyzed full-text search over its values.
     assert props["metadata"] == {"type": "flattened"}
+    assert props["metadata_text"] == {"type": "text"}
     assert store._mapping_ready is True

@@ -62,7 +62,7 @@ uvicorn app.main:app --reload
 | `GET` | `/events` | Filter by `event_type`, `user_id`, `source_url`, `from`, `to` with `limit`/`offset`; returns `has_more` (exact count only with `with_total=true`) |
 | `GET` | `/events/stats` | Event counts grouped by `event_type`; unfiltered call served from a precomputed rollup (`source` field), `from`/`to` + `interval=minute\|hour\|day` fall back to live aggregation |
 | `GET` | `/events/stats/realtime` | Per-type counts over a recent window, cache-aside via Redis (degrades to Mongo if Redis is down) |
-| `GET` | `/events/search` | Search via Elasticsearch: free text (`?q=`) and/or filters (`event_type`, `user_id`, `source_url`, `from`, `to`) with `size`/`offset` |
+| `GET` | `/events/search` | Search via Elasticsearch: full-text `?q=` (matches `event_type`, `source_url`, and **event metadata**) and/or filters (`event_type`, `user_id`, `source_url`, `from`, `to`) with `size`/`offset` |
 | `GET` | `/health` | Liveness probe |
 | `GET` | `/health/ready` | Readiness probe — pings all three stores |
 | `GET` | `/metrics` | Operational snapshot: queue depth, DLQ size, worker throughput/retries, cache hit rate |

@@ -35,9 +35,13 @@ _MAPPING = {
             # whole object as one field of keyword-like leaves, so arbitrary keys
             # never explode the mapping and mixed value types across events can't
             # cause index-time conflicts (the failure mode of a plain "object"
-            # with dynamic mapping). Trade-off: leaves are exact-match keywords,
-            # not analysed full-text.
+            # with dynamic mapping). Used for structured/exact access.
             "metadata": {"type": "flattened"},
+            # Derived at index time from metadata's leaf values: an analyzed
+            # text field so full-text /search (?q=) tokenizes and matches terms
+            # that appear only inside metadata (flattened leaves can't be
+            # analyzed). Excluded from search responses.
+            "metadata_text": {"type": "text"},
         }
     }
 }
@@ -119,14 +123,14 @@ class ElasticsearchStore:
         # establish it now so the index isn't auto-created with dynamic mapping.
         if not self._mapping_ready:
             await self.ensure_mapping()
-        actions = [
-            {
-                "_index": self._index,
-                "_id": e.event_id,
-                "_source": e.model_dump(mode="json"),  # ISO strings for ES date type
-            }
-            for e in events
-        ]
+        actions = []
+        for e in events:
+            source = e.model_dump(mode="json")  # ISO strings for ES date type
+            # Mirror metadata's values into an analyzed field for full-text /search.
+            source["metadata_text"] = _metadata_text(e.metadata)
+            actions.append(
+                {"_index": self._index, "_id": e.event_id, "_source": source}
+            )
         # raise_on_error=False: one malformed document must not discard the whole
         # batch (a single mapping conflict shouldn't lose every other event).
         succeeded, errors = await async_bulk(
@@ -163,8 +167,9 @@ class ElasticsearchStore:
         events.
 
         Args:
-            query: Free-text query string scored across ``event_type`` and the
-                analysed ``source_url.text`` field; omit for a filter-only search.
+            query: Free-text query string scored across ``event_type``, the
+                analyzed ``source_url.text`` field, and ``metadata_text`` (so
+                terms inside metadata are matched); omit for a filter-only search.
             event_type: Exact ``event_type`` to match, if given.
             user_id: Exact ``user_id`` to match, if given.
             source_url: Exact ``source_url`` to match, if given.
@@ -176,9 +181,6 @@ class ElasticsearchStore:
         Returns:
             A ``(hits, total)`` tuple: the page of matching documents'
             ``_source`` bodies and the total number of matches.
-
-        Note:
-            TODO: relevance/analyzer tuning once real metadata shapes are known.
         """
         must: list[dict[str, Any]] = []
         if query:
@@ -186,7 +188,11 @@ class ElasticsearchStore:
                 {
                     "multi_match": {
                         "query": query,
-                        "fields": ["event_type", "source_url.text"],
+                        "fields": [
+                            "event_type",
+                            "source_url.text",
+                            "metadata_text",
+                        ],
                     }
                 }
             )
@@ -215,9 +221,40 @@ class ElasticsearchStore:
             size=size,
             from_=offset,
             track_total_hits=True,  # accurate totals beyond ES's default 10k cap
+            source_excludes=["metadata_text"],  # derived field, not part of the event
         )
         hits = [hit["_source"] for hit in resp["hits"]["hits"]]
         return hits, resp["hits"]["total"]["value"]
+
+
+def _metadata_text(metadata: dict[str, Any]) -> str:
+    """Flatten metadata's leaf values into a single string for full-text search.
+
+    The ``flattened`` mapping indexes metadata leaves as exact-match keywords,
+    which can't be tokenized; mirroring the values into an analyzed text field
+    lets ``/search?q=`` match terms that appear only inside metadata.
+
+    Args:
+        metadata: The event's metadata object.
+
+    Returns:
+        A space-joined string of all scalar leaf values (recursing into nested
+        dicts and lists).
+    """
+    parts: list[str] = []
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for item in value.values():
+                _walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                _walk(item)
+        elif value is not None:
+            parts.append(str(value))
+
+    _walk(metadata)
+    return " ".join(parts)
 
 
 def _timestamp_range(

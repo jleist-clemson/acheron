@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
-from app.storage.es import ElasticsearchStore
+from app.storage.es import ElasticsearchStore, _metadata_text
 
 
 def _store_with_response(hits: list[dict], total: int) -> tuple[ElasticsearchStore, AsyncMock]:
@@ -42,7 +42,13 @@ async def test_search_combines_query_and_filters() -> None:
     assert kwargs["track_total_hits"] is True
 
     bool_q = kwargs["query"]["bool"]
-    assert bool_q["must"][0]["multi_match"]["query"] == "checkout"
+    multi_match = bool_q["must"][0]["multi_match"]
+    assert multi_match["query"] == "checkout"
+    # Free text must search metadata (via the derived analyzed field), per the
+    # assignment's "full-text search across event metadata" requirement.
+    assert "metadata_text" in multi_match["fields"]
+    # The derived field is excluded from returned hits.
+    assert kwargs["source_excludes"] == ["metadata_text"]
     assert {"term": {"event_type": "page_view"}} in bool_q["filter"]
     assert {"term": {"user_id": "u1"}} in bool_q["filter"]
     assert {"range": {"timestamp": {"gte": "2026-01-01T00:00:00+00:00"}}} in bool_q["filter"]
@@ -64,3 +70,10 @@ async def test_search_with_no_criteria_matches_all() -> None:
     await store.search()
 
     assert client.search.call_args.kwargs["query"] == {"match_all": {}}
+
+
+def test_metadata_text_flattens_nested_values() -> None:
+    text = _metadata_text({"plan": "pro", "tags": ["a", "b"], "nested": {"ref": 42}})
+
+    tokens = set(text.split())
+    assert {"pro", "a", "b", "42"} <= tokens
