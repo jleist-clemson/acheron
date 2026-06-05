@@ -274,13 +274,15 @@ async def test_rate_limit_returns_429_when_configured(client: httpx.AsyncClient)
     assert codes[3] == 429
 
 
-async def test_health_ready_reports_es_degraded(client: httpx.AsyncClient) -> None:
+async def test_health_ready_tolerates_es_down(client: httpx.AsyncClient) -> None:
     resp = await client.get("/health/ready")
     body = resp.json()
     assert body["checks"]["mongodb"] is True
     assert body["checks"]["redis"] is True
     assert body["checks"]["elasticsearch"] is False
-    assert resp.status_code == 503  # strict readiness: any store down -> degraded
+    # ES is a degradable mirror: it's reported but doesn't fail readiness.
+    assert resp.status_code == 200
+    assert body["status"] == "degraded"
 
 
 async def test_search_degrades_to_502_when_es_down(client: httpx.AsyncClient) -> None:

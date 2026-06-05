@@ -238,6 +238,9 @@ notes.)_
   than needing a manual reindex. A single malformed document is logged and
   skipped (`raise_on_error=False`) without discarding the rest of its batch.
   `/search` degrades or errors meanwhile, but no authoritative data is lost.
+  **Readiness stays green** when only ES is down: `/health/ready` gates on
+  MongoDB alone (the source of truth) and merely reports ES/Redis, so a
+  deliberately-degradable mirror doesn't pull the pod from rotation.
 - **Redis unavailable.** `/stats/realtime` falls back to computing from Mongo
   (slower) or returns a clearly-degraded response, and ingest rate limiting fails
   open (requests are allowed). Cache loss is never data loss.

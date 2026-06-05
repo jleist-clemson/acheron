@@ -21,12 +21,17 @@ async def health() -> dict:
 async def health_ready(request: Request) -> JSONResponse:
     """Readiness probe that pings MongoDB, Elasticsearch, and Redis.
 
+    Only MongoDB — the source of truth — gates readiness. Elasticsearch (a
+    derived search mirror) and Redis (a cache) are designed to be degraded around
+    (ARCHITECTURE.md §7), so they are reported in ``checks`` but do not flip the
+    pod out of rotation when down; ``degraded`` signals that.
+
     Args:
         request: The incoming request; the stores are read from ``app.state``.
 
     Returns:
-        HTTP 200 with per-store check results when all are reachable, otherwise
-        HTTP 503 with the same shape.
+        HTTP 200 while MongoDB is reachable (``ready`` if all stores are up,
+        ``degraded`` if a non-critical one is down), otherwise HTTP 503.
     """
     mongo = request.app.state.mongo
     es = request.app.state.es
@@ -37,11 +42,13 @@ async def health_ready(request: Request) -> JSONResponse:
         "elasticsearch": await es.ping(),
         "redis": await cache.ping(),
     }
-    all_ok = all(checks.values())
+    if not checks["mongodb"]:
+        status_text = "unavailable"
+    elif all(checks.values()):
+        status_text = "ready"
+    else:
+        status_text = "degraded"
     return JSONResponse(
-        status_code=200 if all_ok else 503,
-        content={
-            "status": "ready" if all_ok else "degraded",
-            "checks": checks,
-        },
+        status_code=200 if checks["mongodb"] else 503,
+        content={"status": status_text, "checks": checks},
     )
