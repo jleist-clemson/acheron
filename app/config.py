@@ -34,5 +34,10 @@ class Settings(BaseSettings):
     # Poll interval for the ES outbox indexer when the backlog is empty.
     es_index_interval_seconds: int = 5
 
+    # --- abuse prevention ---
+    # Per-client (by IP) ingest rate limit for POST /events, requests/minute.
+    # 0 disables it (Redis-backed fixed window; fails open if Redis is down).
+    rate_limit_per_minute: int = 0
+
     # --- observability ---
     log_level: str = "INFO"

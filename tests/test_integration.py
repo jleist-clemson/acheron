@@ -258,6 +258,22 @@ async def test_metrics_endpoint_reports_pipeline_state(client: httpx.AsyncClient
     assert "hit_rate" in m["cache"]
 
 
+async def test_rate_limit_returns_429_when_configured(client: httpx.AsyncClient) -> None:
+    import app.main as main
+
+    body = {"event_type": "rl", "user_id": "x", "source_url": "https://t.test"}
+    settings = main.app.state.settings
+    original = settings.rate_limit_per_minute
+    settings.rate_limit_per_minute = 3  # allow 3/min, the 4th should be rejected
+    try:
+        codes = [(await client.post("/events", json=body)).status_code for _ in range(4)]
+    finally:
+        settings.rate_limit_per_minute = original
+
+    assert codes[:3] == [202, 202, 202]
+    assert codes[3] == 429
+
+
 async def test_health_ready_reports_es_degraded(client: httpx.AsyncClient) -> None:
     resp = await client.get("/health/ready")
     body = resp.json()

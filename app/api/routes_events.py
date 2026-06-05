@@ -44,6 +44,31 @@ def _cache(request: Request) -> RedisCache:
     return request.app.state.redis_cache
 
 
+async def _enforce_rate_limit(request: Request) -> None:
+    """Reject ingest from a client that exceeds the configured rate (HTTP 429).
+
+    A no-op unless ``rate_limit_per_minute`` is configured (> 0). Buckets on the
+    client IP via a Redis fixed window; fails open if Redis is unavailable.
+
+    Args:
+        request: The incoming request (for client IP and ``app.state``).
+
+    Raises:
+        HTTPException: 429 if the per-minute limit is exceeded.
+    """
+    settings = request.app.state.settings
+    limit = settings.rate_limit_per_minute
+    if limit <= 0:
+        return
+    cache: RedisCache = request.app.state.redis_cache
+    client_ip = request.client.host if request.client else "unknown"
+    if not await cache.check_rate_limit(client_ip, limit, 60):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded; slow down",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Routes — more-specific paths registered before the root GET ""
 # ---------------------------------------------------------------------------
@@ -265,7 +290,12 @@ async def list_events(
     }
 
 
-@router.post("", status_code=status.HTTP_202_ACCEPTED, summary="Ingest a new event")
+@router.post(
+    "",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Ingest a new event",
+    dependencies=[Depends(_enforce_rate_limit)],
+)
 async def create_event(
     event: EventCreate,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -283,8 +313,8 @@ async def create_event(
         ``{"event_id": <str>, "received_at": <iso8601>}`` with HTTP 202.
 
     Raises:
-        HTTPException: 503 if the service is shutting down and no longer
-            accepting events; 429 if the in-process queue is full (backpressure).
+        HTTPException: 429 if the per-client rate limit is exceeded or the
+            in-process queue is full; 503 if the service is shutting down.
     """
     try:
         doc = service.ingest(event, idempotency_key=idempotency_key)

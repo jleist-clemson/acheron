@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Awaitable, Callable, Optional
 
 from redis.asyncio import Redis
@@ -115,3 +116,32 @@ class RedisCache:
         except Exception as exc:
             logger.warning("Redis SET failed for '%s'; serving uncached: %s", key, exc)
         return value, False
+
+    async def check_rate_limit(
+        self, identifier: str, limit: int, window_seconds: int
+    ) -> bool:
+        """Fixed-window rate-limit check; return True if the request is allowed.
+
+        Counts requests per *identifier* in the current window via an atomic
+        ``INCR`` and expires the counter at the window's end. Fails open (allows
+        the request) if Redis is unavailable — rate limiting is best-effort and
+        must never take ingestion down.
+
+        Args:
+            identifier: Caller identity to bucket on (e.g. client IP).
+            limit: Maximum requests allowed per window.
+            window_seconds: Window length, in seconds.
+
+        Returns:
+            True if the request is within the limit (or Redis is unreachable).
+        """
+        try:
+            bucket = int(time.time()) // window_seconds
+            key = f"ratelimit:{identifier}:{bucket}"
+            count = await self._redis.incr(key)
+            if count == 1:
+                await self._redis.expire(key, window_seconds)
+            return count <= limit
+        except Exception as exc:
+            logger.warning("Rate limit check failed (allowing request): %s", exc)
+            return True

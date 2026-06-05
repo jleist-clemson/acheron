@@ -37,3 +37,25 @@ async def test_get_or_set_tracks_hits_and_misses() -> None:
 async def test_metrics_hit_rate_is_zero_when_idle() -> None:
     cache = RedisCache("redis://x:6379/0")
     assert cache.metrics() == {"hits": 0, "misses": 0, "hit_rate": 0.0}
+
+
+async def test_check_rate_limit_allows_until_limit() -> None:
+    cache = RedisCache("redis://x:6379/0")
+    redis = AsyncMock()
+    redis.incr.side_effect = [1, 2, 3, 4]  # counter within the window
+    cache._redis = redis
+
+    results = [await cache.check_rate_limit("1.2.3.4", 3, 60) for _ in range(4)]
+
+    assert results == [True, True, True, False]  # 4th request over the limit
+    redis.expire.assert_awaited_once()  # TTL set on the first request only
+
+
+async def test_check_rate_limit_fails_open_on_redis_error() -> None:
+    cache = RedisCache("redis://x:6379/0")
+    redis = AsyncMock()
+    redis.incr.side_effect = RuntimeError("redis down")
+    cache._redis = redis
+
+    # Redis unavailable must not block ingestion.
+    assert await cache.check_rate_limit("1.2.3.4", 1, 60) is True

@@ -75,7 +75,7 @@ most-tolerant-of-staleness read.
 
 | Component | Owns | Explicitly does **not** own |
 |---|---|---|
-| **API (FastAPI)** | Request validation, auth/rate-limit boundary, enqueue, serving reads. Returns `202 Accepted` on ingest — it never blocks on a DB write. | Persistence. The API must stay stateless so it can scale on request load alone. |
+| **API (FastAPI)** | Request validation, ingest rate limiting (Redis-backed fixed window, configurable; the natural home for auth too, which isn't implemented), enqueue, serving reads. Returns `202 Accepted` on ingest — it never blocks on a DB write. | Persistence. The API must stay stateless so it can scale on request load alone. |
 | **Queue (`asyncio.Queue`)** | Buffering between fast producers and slower consumers; applying backpressure when full. | Durability. Contents are lost if the process dies (see §7). |
 | **Worker** | Draining the queue, deduplication, batching writes, retry/backoff, routing exhausted events to the DLQ, persisting to Mongo. (ES is indexed downstream from the outbox by the EsIndexer.) | Request handling. Its scaling signal is queue depth, not HTTP traffic. |
 | **MongoDB** | **Source of truth.** Flexible event documents (`metadata` is schemaless) and the aggregation pipelines behind `/stats`. | Full-text search. |
@@ -239,7 +239,8 @@ notes.)_
   skipped (`raise_on_error=False`) without discarding the rest of its batch.
   `/search` degrades or errors meanwhile, but no authoritative data is lost.
 - **Redis unavailable.** `/stats/realtime` falls back to computing from Mongo
-  (slower) or returns a clearly-degraded response. Cache loss is never data loss.
+  (slower) or returns a clearly-degraded response, and ingest rate limiting fails
+  open (requests are allowed). Cache loss is never data loss.
 - **Queue full.** Producers get backpressure (`429`/`503`) — a deliberate,
   visible failure rather than unbounded memory growth.
 
