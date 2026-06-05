@@ -118,15 +118,64 @@ were verified manually against a live cluster).
 
 ## AI in My Workflow
 
-This project was scaffolded and iterated with **Claude Code** (Anthropic).
+This project was scaffolded and iterated with **Claude Code** (Anthropic). I used
+it less as a code generator and more as a design partner — to surface trade-offs,
+argue both sides of a decision, and stress-test the architecture against the
+assignment's constraints. The pattern throughout was: AI proposes an approach and
+names the trade-off; I push back against the requirements; we converge on a call
+that's then written into ARCHITECTURE.md so the reasoning is durable.
 
-Key contributions:
-- Generated the full module layout from ARCHITECTURE.md constraints.
-- Drafted the Worker retry/backoff/DLQ logic and lifespan lifecycle hook.
-- Caught the `model_dump()` vs `model_dump(mode="json")` distinction (native datetime for Motor vs ISO strings for ES).
-- Suggested the `event_id`-as-MongoDB-`_id` pattern for idempotent retries.
+### Design debates that shaped the code
 
-Human review focused on:
-- Architectural trade-offs, failure-mode accuracy against ARCHITECTURE.md, and aligning env var names exactly with `.env.example`.
-- Scrutinizing the **Prerequisites**: questioned the "Docker Desktop" requirement and confirmed any Docker-compatible engine + Compose v2 (e.g. Rancher Desktop with the Moby backend) works, broadening the wording accordingly.
-- Deciding to adopt **Google-style docstring syntax** across the codebase, codified and enforced via `ruff.toml` (pydocstyle, `google` convention).
+- **Dual-write → outbox.** The first implementation had the worker write to Mongo
+  and then index to ES inline (a dual write). AI flagged the seam itself: a crash
+  between the two writes leaves the stores diverged. The textbook fix is to make
+  ES strictly downstream — but the obvious mechanism, **MongoDB change streams**,
+  needs a replica set, which the assignment-pinned single-node `mongo:7.0` isn't.
+  I pushed for a fix that stayed inside the constraints; we landed on a **Mongo
+  outbox** (an `es_indexed` marker set in the same atomic insert) drained by a
+  background `EsIndexer` that flips the marker only on success. ES now catches up
+  durably after a crash/outage instead of silently losing events.
+
+- **`flattened` vs `object` for ES metadata — and the full-text gap it created.**
+  Schemaless `metadata` mapped as a dynamic `object` causes index-time conflicts
+  when the same key arrives with different value types. AI proposed `flattened`,
+  which kills the conflicts — and named the cost: leaves become exact-match
+  keywords, *not* analyzed full-text. I initially accepted that trade-off; a later
+  review caught that it broke the assignment's "full-text search across metadata"
+  requirement. Rather than revert to the conflict-prone `object`, we kept
+  `flattened` for structured access and added a derived, analyzed `metadata_text`
+  field for tokenized search — getting both properties instead of trading one for
+  the other.
+
+- **Durable broker — deliberately *not* built.** AI's instinct (and most "do it
+  right" advice) was a real broker (SQS/Kafka) from day one. I held the line that
+  the assignment mandates an in-process `asyncio.Queue`; building a broker would
+  violate the core constraint and the do-not-modify infra. We captured the broker
+  as the documented migration path (§10/§11) rather than code — the right call was
+  knowing what *not* to implement.
+
+- **Retry-in-place vs re-enqueue.** ARCHITECTURE.md said failed batches were
+  "re-enqueued"; the code retried in place. Instead of reflexively changing the
+  code to match the doc, we reasoned it through: re-enqueuing into a *bounded*
+  in-process queue adds a "re-enqueue into a full queue" failure mode for no real
+  gain. We kept in-place retry and fixed the doc — reconciling, not cargo-culting.
+
+### Other human-driven calls
+
+- Scrutinized the **Prerequisites**: questioned the "Docker Desktop" requirement
+  and broadened it to any Docker-compatible engine + Compose v2 (e.g. Rancher
+  Desktop with the Moby backend) after confirming it works.
+- Adopted **Google-style docstrings** across the codebase, codified and enforced
+  via `ruff.toml` (pydocstyle, `google` convention).
+- Repeatedly enforced **doc/code consistency**: every behavior change reconciled
+  ARCHITECTURE.md and README in the same commit, so the design narrative never
+  drifts from the implementation.
+
+### Where AI caught things I'd have missed
+
+- The `model_dump()` vs `model_dump(mode="json")` distinction (native `datetime`
+  for Motor vs ISO strings for ES).
+- The `event_id`-as-MongoDB-`_id` pattern for idempotent retries.
+- `async_bulk`'s default `raise_on_error=True` silently dropping a whole ES batch
+  on one bad document.
