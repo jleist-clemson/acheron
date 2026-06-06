@@ -2,9 +2,10 @@
 
 Vendor-neutral project context, shared across AI coding tools. Cursor reads this
 file natively; Claude Code reads it via the `@AGENTS.md` import in `CLAUDE.md`.
-Tool-specific, path-scoped rules live in `.cursor/rules/` (Cursor) and
-`.claude/rules/` (Claude Code) — keep those mirrors in sync with each other and
-with this file. `ARCHITECTURE.md` is the authoritative design document.
+Tool-specific rules live in `.cursor/rules/` (Cursor, glob-scoped via `globs:`)
+and `.claude/rules/` (Claude Code, imported from `CLAUDE.md` so they load every
+session) — keep those mirrors in sync with each other and with this file.
+`ARCHITECTURE.md` is the authoritative design document.
 
 ## What this is
 
@@ -34,7 +35,8 @@ Business logic lives in services/stores, never in route handlers.
 
 - `from __future__ import annotations` atop every module; Google-style docstrings
   (ruff `D`, pydocstyle google). Tunables live in `Settings`, not magic numbers.
-- Routes are thin and declare a Pydantic `response_model`; errors map to status
+- Routes are thin; the events routes declare a Pydantic `response_model`
+  (`/health` and `/metrics` are intentionally exempt). Errors map to status
   codes (Mongo→503, ES→502, queue full→429, shutdown→503).
 - Tests: pytest with `asyncio_mode=auto`; unit tests are hermetic, Docker-backed
   tests are marked `integration` and deselected by default.

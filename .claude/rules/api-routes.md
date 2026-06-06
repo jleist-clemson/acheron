@@ -1,17 +1,16 @@
----
-paths:
-  - "app/api/**/*.py"
----
-
 # API Route Conventions
+
+**Applies to:** `app/api/**/*.py`
 
 - Routes are thin: validate input, call a service/store, shape the response.
   No persistence, aggregation, or business logic in a handler.
 - Pull dependencies off `app.state` via the `Depends(_helper)` pattern (e.g.
   `_mongo`, `_es`, `_cache`, `_ingestion`); don't reach into globals.
-- Every route declares a Pydantic `response_model` from `app/api/schemas.py`.
-  Nullable fields are **always present** in the response (return explicit
-  `null`, e.g. `total`, `bucket`, `computed_at`) for a stable shape.
+- The events routes declare a Pydantic `response_model` from
+  `app/api/schemas.py`; `/health` (a status-code-driven `JSONResponse`) and
+  `/metrics` (a loose ops snapshot) are intentionally exempt. Nullable fields are
+  **always present** in the response (return explicit `null`, e.g. `total`,
+  `bucket`, `computed_at`) for a stable shape.
 
 # Error → status mapping (be consistent)
 

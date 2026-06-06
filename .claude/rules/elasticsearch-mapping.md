@@ -1,10 +1,6 @@
----
-paths:
-  - "app/storage/es.py"
-  - "app/worker/es_indexer.py"
----
-
 # Elasticsearch Mapping & Indexing
+
+**Applies to:** `app/storage/es.py`, `app/worker/es_indexer.py`
 
 ES is a **derived, rebuildable mirror** of Mongo — never the source of truth.
 The explicit mapping is intentional; document any change in `ARCHITECTURE.md §6`.
@@ -19,11 +15,16 @@ Call this out explicitly in the PR/commit and the architecture doc.
 ## Field-type conventions (don't drift)
 
 - Exact-match / aggregatable fields (`event_type`, `user_id`) → `keyword`.
+- `schema_version` → `integer` (producer-declared event schema version).
 - `source_url` → `keyword` with a `text` sub-field for tokenized search.
 - `metadata` → `flattened`: schemaless keys can't explode the mapping and mixed
-  value types across events can't cause index-time conflicts. Trade-off: leaves
-  are exact-match keyword, not analyzed full-text. If tokenized search over
-  metadata *values* is needed, that's a mapping change (reindex — see above).
+  value types across events can't cause index-time conflicts. The trade-off is
+  that `flattened` leaves are exact-match keyword, not analyzed full-text — which
+  is why metadata values are *also* mirrored into `metadata_text` (below).
+- `metadata_text` → `text` (analyzed). Derived at index time from the metadata
+  leaf values and included in the `/search?q=` query, so full-text search hits
+  terms that appear only inside metadata. Search-only: excluded from `/search`
+  responses (`source_excludes`) and never stored in Mongo (ARCHITECTURE §6).
 
 ## Indexing must tolerate partial failure
 

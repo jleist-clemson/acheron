@@ -1,9 +1,6 @@
----
-paths:
-  - "tests/**/*.py"
----
-
 # Testing Conventions
+
+**Applies to:** `tests/**/*.py`
 
 - `pytest` with `asyncio_mode = auto` — write `async def test_*` directly, no
   per-test `@pytest.mark.asyncio` needed.

@@ -16,8 +16,10 @@ alwaysApply: false
 # Configuration, not magic numbers
 
 All tunables (timeouts, batch sizes, TTLs, intervals, limits) live in
-`app/config.py` `Settings` and are read from the environment. Defaults must
-mirror `docker-compose.yml` and `.env.example`.
+`app/config.py` `Settings` and are read from the environment. Defaults should
+match `docker-compose.yml` where the var is set there; `.env.example` is the
+original frozen subset (do not modify), so newer tunables live in `Settings`
+with a sensible default only.
 
 ```python
 # ❌ BAD — hard-coded in a worker/route

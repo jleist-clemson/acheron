@@ -1,10 +1,6 @@
----
-paths:
-  - "app/worker/**/*.py"
-  - "app/main.py"
----
-
 # Background Task Lifecycle
+
+**Applies to:** `app/worker/**/*.py`, `app/main.py`
 
 Background tasks (`WorkerPool`, `EsIndexer`, `RollupScheduler`) follow a
 `start()` / `stop()` shape with an `asyncio.Event` stop signal and a single
