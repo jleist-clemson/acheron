@@ -59,3 +59,32 @@ async def test_check_rate_limit_fails_open_on_redis_error() -> None:
 
     # Redis unavailable must not block ingestion.
     assert await cache.check_rate_limit("1.2.3.4", 1, 60) is True
+
+
+async def test_check_idempotency_new_then_replay_then_conflict() -> None:
+    cache = RedisCache("redis://x:6379/0")
+    redis = AsyncMock()
+    cache._redis = redis
+
+    # First use: SET NX succeeds -> the key is claimed.
+    redis.set.return_value = True
+    assert await cache.check_idempotency("k", "fp1", 60) == "new"
+
+    # Same key, same body: NX fails and the stored fingerprint matches.
+    redis.set.return_value = None
+    redis.get.return_value = "fp1"
+    assert await cache.check_idempotency("k", "fp1", 60) == "replay"
+
+    # Same key, different body: stored fingerprint differs -> conflict.
+    redis.get.return_value = "fp1"
+    assert await cache.check_idempotency("k", "fp2", 60) == "conflict"
+
+
+async def test_check_idempotency_fails_open_on_redis_error() -> None:
+    cache = RedisCache("redis://x:6379/0")
+    redis = AsyncMock()
+    redis.set.side_effect = RuntimeError("redis down")
+    cache._redis = redis
+
+    # Redis unavailable must not block ingestion (detection is best-effort).
+    assert await cache.check_idempotency("k", "fp", 60) == "new"

@@ -58,7 +58,7 @@ uvicorn app.main:app --reload
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/events` | Ingest an event → 202 with `event_id`. Optional `Idempotency-Key` header dedupes repeat submissions |
+| `POST` | `/events` | Ingest an event → 202 with `event_id`. Optional `Idempotency-Key` header dedupes repeat submissions; reusing a key with a different body → 409 |
 | `GET` | `/events` | Filter by `event_type`, `user_id`, `source_url`, `from`, `to` with `limit`/`offset`; returns `has_more` (exact count only with `with_total=true`) |
 | `GET` | `/events/stats` | Event counts grouped by `event_type`; unfiltered call served from a precomputed rollup (`source` field), `from`/`to` + `interval=minute\|hour\|day\|week` fall back to live aggregation |
 | `GET` | `/events/stats/realtime` | Per-type counts over a recent window, cache-aside via Redis (degrades to Mongo if Redis is down) |
@@ -110,6 +110,9 @@ pytest -v          # integration tests are deselected by default
 - **API contract** (`test_openapi.py`) — the events routes advertise their typed
   Pydantic response models in the OpenAPI document (guards against a route
   silently reverting to an untyped `dict`).
+- **Idempotency** (`test_idempotency.py`, `test_redis_cache.py`) — the request
+  fingerprint ignores server-defaulted fields but distinguishes different
+  bodies; the Redis claim/compare returns new/replay/conflict and fails open.
 
 **Integration tests** — drive the real app (lifespan, in-process worker, stores)
 against ephemeral **MongoDB + Redis** containers via `testcontainers`. Requires
@@ -121,7 +124,8 @@ pytest -m integration -v
 ```
 
 `test_integration.py` covers the end-to-end POST → worker → GET round-trip,
-idempotency dedup, filters/pagination, the `/stats` aggregation (incl. weekly
+idempotency dedup and key-reuse conflict (409), filters/pagination, the
+`/stats` aggregation (incl. weekly
 buckets), the Redis cache-aside miss→hit, rate limiting (429), the durable DLQ
 (persist → `GET /events/dlq` → replay → re-drive into Mongo), and — with
 Elasticsearch pointed at a dead address — the graceful-degradation contract

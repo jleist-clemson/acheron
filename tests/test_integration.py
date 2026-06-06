@@ -163,6 +163,27 @@ async def test_idempotency_key_dedupes_duplicate_submissions(
     assert len(data["events"]) == 1
 
 
+async def test_idempotency_key_conflict_returns_409(client: httpx.AsyncClient) -> None:
+    et = f"itest_{uuid.uuid4().hex[:8]}"
+    headers = {"Idempotency-Key": f"key-{uuid.uuid4().hex}"}
+    body = {"event_type": et, "user_id": "u1", "source_url": "https://t.test"}
+
+    first = await client.post("/events", json=body, headers=headers)
+    assert first.status_code == 202
+
+    # Same key + same body: a genuine retry, still accepted with the same id.
+    replay = await client.post("/events", json=body, headers=headers)
+    assert replay.status_code == 202
+    assert replay.json()["event_id"] == first.json()["event_id"]
+
+    # Same key + DIFFERENT body: rejected as a conflict rather than silently
+    # dropping the new payload behind the original event_id.
+    conflict = await client.post(
+        "/events", json={**body, "user_id": "someone-else"}, headers=headers
+    )
+    assert conflict.status_code == 409
+
+
 async def test_filters_and_pagination(client: httpx.AsyncClient) -> None:
     et = f"itest_{uuid.uuid4().hex[:8]}"
     for uid in ("u1", "u2", "u3"):

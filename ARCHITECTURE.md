@@ -145,7 +145,8 @@ workers `get()`, process a batch, and `task_done()`.
   skipped), and duplicate ids within a batch are collapsed before the write.
   *Distinct* client submissions of the same logical event can be deduplicated by
   sending a matching `Idempotency-Key` header, which maps to a deterministic
-  `event_id` (`uuid5`) so the repeat collapses at the Mongo write (§11).
+  `event_id` (`uuid5`) so the repeat collapses at the Mongo write; reusing that
+  key with a *different* body is rejected with `409` (§11).
 - **Backpressure.** The bounded queue rejects/slows producers when full rather
   than growing unbounded — the API can return `503`/`429` instead of OOMing.
 - **Ordering is not guaranteed** across concurrent workers (and we don't need it).
@@ -357,6 +358,12 @@ is the whole point.
   recovery; a real broker's native redrive (§5) is the production replacement.
 - **Idempotency keys** on ingest — *implemented*: an optional `Idempotency-Key`
   header maps to a deterministic `event_id` (`uuid5`), so duplicate submissions
-  collapse at the Mongo write. A fuller version would persist a key→response
-  record to detect duplicates *synchronously* at ingest; we keep ingest
-  non-blocking (§3), so dedup happens downstream rather than at accept time.
+  collapse at the Mongo write. Reusing a key with a *different* body is caught
+  synchronously at accept time and rejected with `409`: a Redis-stored
+  fingerprint of the client-supplied fields (`exclude_unset`, so a
+  server-defaulted timestamp can't false-positive) is claimed with `SET NX`, and
+  a later mismatch is the conflict. Detection fails open if Redis is down — the
+  durable downstream dedup still collapses true duplicates. We deliberately do
+  *not* persist and replay the original response: ingest stays non-blocking (§3),
+  so a matching retry is re-driven through the pipeline (deduped at the Mongo
+  write) rather than served from a stored result.

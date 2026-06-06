@@ -39,5 +39,11 @@ class Settings(BaseSettings):
     # 0 disables it (Redis-backed fixed window; fails open if Redis is down).
     rate_limit_per_minute: int = 0
 
+    # --- idempotency ---
+    # How long a seen Idempotency-Key is remembered for conflict detection on
+    # POST /events: reusing a key with a different body within this window is
+    # rejected with 409. Redis-backed; fails open if Redis is down.
+    idempotency_key_ttl_seconds: int = 86400  # 24h
+
     # --- observability ---
     log_level: str = "INFO"

@@ -145,3 +145,38 @@ class RedisCache:
         except Exception as exc:
             logger.warning("Rate limit check failed (allowing request): %s", exc)
             return True
+
+    async def check_idempotency(
+        self, key: str, fingerprint: str, ttl_seconds: int
+    ) -> str:
+        """Claim an idempotency key and classify the request against prior use.
+
+        Atomically records the request *fingerprint* under *key* the first time
+        it is seen (``SET NX``). A later request bearing the same key is a
+        **replay** when its fingerprint matches the stored one, or a **conflict**
+        when it differs (the key was reused with a different body). Fails open —
+        returns ``"new"`` if Redis is unavailable — so detection is best-effort
+        and never takes ingestion down; the durable downstream dedup (§5) still
+        collapses true duplicates regardless.
+
+        Args:
+            key: The client-supplied ``Idempotency-Key``.
+            fingerprint: A stable hash of the client-supplied request body.
+            ttl_seconds: How long the key is remembered.
+
+        Returns:
+            ``"new"`` (first use, or Redis down), ``"replay"`` (same key + body),
+            or ``"conflict"`` (same key, different body).
+        """
+        redis_key = f"idem:{key}"
+        try:
+            claimed = await self._redis.set(
+                redis_key, fingerprint, nx=True, ex=ttl_seconds
+            )
+            if claimed:
+                return "new"
+            stored = await self._redis.get(redis_key)
+            return "replay" if stored == fingerprint else "conflict"
+        except Exception as exc:
+            logger.warning("Idempotency check failed (allowing request): %s", exc)
+            return "new"

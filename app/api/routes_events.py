@@ -5,6 +5,8 @@ All business logic lives in services/stores; routes only translate HTTP ↔ doma
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from datetime import datetime
 from typing import Optional
@@ -76,6 +78,24 @@ async def _enforce_rate_limit(request: Request) -> None:
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Rate limit exceeded; slow down",
         )
+
+
+def _idempotency_fingerprint(event: EventCreate) -> str:
+    """Hash the client-supplied event fields to detect Idempotency-Key reuse.
+
+    Uses ``exclude_unset`` so server-defaulted fields (e.g. an omitted
+    ``timestamp``, which would otherwise differ per request) don't make two
+    otherwise-identical retries look like different bodies.
+
+    Args:
+        event: The validated event payload.
+
+    Returns:
+        A hex SHA-256 over the canonical (sorted-key) JSON of the set fields.
+    """
+    payload = event.model_dump(mode="json", exclude_unset=True)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -387,24 +407,43 @@ async def list_events(
 )
 async def create_event(
     event: EventCreate,
+    request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     service: IngestionService = Depends(_ingestion),
+    cache: RedisCache = Depends(_cache),
 ) -> IngestResponse:
     """Validate and enqueue an event for asynchronous processing.
 
+    With an ``Idempotency-Key``, a repeat submission of the *same* body collapses
+    to a single stored event (same ``event_id``, deduped at the Mongo write),
+    while reusing the key with a *different* body is rejected with 409 — caught
+    here via a Redis fingerprint, since the non-blocking pipeline can't dedupe at
+    accept time (ARCHITECTURE.md §11). Detection fails open if Redis is down.
+
     Args:
         event: The client-supplied event payload.
-        idempotency_key: Optional ``Idempotency-Key`` header; repeat submissions
-            with the same key collapse to a single stored event (same event_id).
+        request: The incoming request (for settings on ``app.state``).
+        idempotency_key: Optional ``Idempotency-Key`` header; see above.
         service: Ingestion service (injected).
+        cache: Redis cache, used for idempotency-key conflict detection (injected).
 
     Returns:
         The assigned ``event_id`` and server ``received_at``, with HTTP 202.
 
     Raises:
-        HTTPException: 429 if the per-client rate limit is exceeded or the
+        HTTPException: 409 if the ``Idempotency-Key`` was already used with a
+            different body; 429 if the per-client rate limit is exceeded or the
             in-process queue is full; 503 if the service is shutting down.
     """
+    key = idempotency_key.strip() if idempotency_key else None
+    if key:
+        ttl = request.app.state.settings.idempotency_key_ttl_seconds
+        fingerprint = _idempotency_fingerprint(event)
+        if await cache.check_idempotency(key, fingerprint, ttl) == "conflict":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Idempotency-Key was already used with a different request body",
+            )
     try:
         doc = service.ingest(event, idempotency_key=idempotency_key)
     except IngestionClosed:
