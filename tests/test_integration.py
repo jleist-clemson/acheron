@@ -276,7 +276,15 @@ async def test_metrics_endpoint_reports_pipeline_state(client: httpx.AsyncClient
     )
     await _poll(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
 
-    m = (await client.get("/metrics")).json()
+    # The worker's events_processed counter updates when its bulk_write coroutine
+    # resumes, which lags Mongo's commit (the doc is queryable above slightly
+    # before the counter ticks). Poll the metric rather than reading it once.
+    m = await _poll(
+        client,
+        "/metrics",
+        {},
+        lambda d: d["worker"]["events_processed"] >= 1 and d["queue"]["depth"] == 0,
+    )
     assert m["queue"]["capacity"] >= 1
     assert m["queue"]["depth"] == 0  # drained
     assert m["worker"]["events_processed"] >= 1
