@@ -1,0 +1,32 @@
+---
+description: Architecture orientation and cross-cutting conventions for acheron
+alwaysApply: true
+---
+
+# Acheron — Distributed Event Processing Platform
+
+Write path: `POST /events` → bounded in-process `asyncio.Queue` → async worker →
+**MongoDB (source of truth)**. Elasticsearch is a **derived mirror**, populated
+strictly downstream from a Mongo outbox (`es_indexed` marker) by the `EsIndexer`.
+Redis caches the realtime stats summary. See `ARCHITECTURE.md` for full rationale.
+
+## Layering (keep these boundaries)
+
+- `app/api/` — HTTP only: translate request ↔ domain, map errors to status codes.
+- `app/ingestion/`, `app/worker/` — pipeline logic (enqueue, consume, index, rollup).
+- `app/storage/`, `app/cache/`, `app/queue/` — one backend per module.
+
+Business logic lives in services/stores, never in route handlers.
+
+## Store roles (do not blur)
+
+- **Mongo is authoritative.** If Mongo and ES disagree, Mongo wins.
+- **ES is best-effort and rebuildable** — never fail an authoritative write on it.
+- **Redis is a cache** — a Redis outage must degrade, never lose data.
+- The queue is **in-process and non-durable**; that constraint drives most
+  failure-mode and scaling reasoning. Don't design as if it were durable.
+
+## Docs are a first-class deliverable
+
+When you change behavior, update `ARCHITECTURE.md` and `README.md` in the same
+change. Code and docs must not drift — the architecture doc is graded.

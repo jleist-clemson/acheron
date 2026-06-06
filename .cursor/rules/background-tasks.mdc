@@ -1,0 +1,45 @@
+---
+description: Background task lifecycle, shutdown ordering, and loop invariants
+globs: app/worker/**/*.py,app/main.py
+alwaysApply: false
+---
+
+# Background Task Lifecycle
+
+Background tasks (`WorkerPool`, `EsIndexer`, `RollupScheduler`) follow a
+`start()` / `stop()` shape with an `asyncio.Event` stop signal and a single
+`asyncio.create_task(..., name=...)`. The skeleton matters less than the
+decisions below — get these wrong and you lose data or hang a deploy.
+
+## Drain vs. cancel on `stop()` (a correctness decision)
+
+- If the task holds **un-acked, un-persisted work**, drain it before cancelling.
+  `WorkerPool.stop()` does `await queue.join()` with a timeout, *then* cancels.
+- If the task's work is **idempotent / replayable** (the outbox re-indexes, the
+  next tick re-aggregates), set the stop event and cancel directly —
+  `EsIndexer` / `RollupScheduler`.
+
+When adding a task, ask: would cancelling mid-flight lose anything? That answer
+picks the variant.
+
+## Loop invariants
+
+- Idle interruptibly — never block shutdown for a full interval:
+
+```python
+# ✅ wakes immediately on stop
+try:
+    await asyncio.wait_for(self._stop_event.wait(), timeout=self._interval)
+except asyncio.TimeoutError:
+    pass  # interval elapsed
+# ❌ asyncio.sleep(self._interval)  # ignores the stop signal
+```
+
+- The loop body **catches and logs**, never lets an exception kill the task.
+- Consumers must call `task_done()` for every `get()`, even on error.
+
+## Shutdown ordering in `app/main.py` lifespan
+
+`ingestion.stop_accepting()` → `worker.stop()` (drain) → `es_indexer.stop()` →
+`rollup.stop()` → **then** close Mongo/ES/Redis clients. Never close a client a
+running task still uses.

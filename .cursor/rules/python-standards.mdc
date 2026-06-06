@@ -1,0 +1,32 @@
+---
+description: Python style and configuration conventions
+globs: app/**/*.py
+alwaysApply: false
+---
+
+# Python Standards
+
+- Start every module with `from __future__ import annotations`.
+- Every module, class, and public function has a docstring in **Google style**
+  (enforced by ruff `D` rules, `pydocstyle` convention = google). Document
+  `Args:`, `Returns:`, and `Raises:` for non-trivial functions.
+- A module docstring should state the module's job; reference the relevant
+  `ARCHITECTURE.md` section when it explains a non-obvious design choice.
+
+# Configuration, not magic numbers
+
+All tunables (timeouts, batch sizes, TTLs, intervals, limits) live in
+`app/config.py` `Settings` and are read from the environment. Defaults must
+mirror `docker-compose.yml` and `.env.example`.
+
+```python
+# ❌ BAD — hard-coded in a worker/route
+await asyncio.sleep(0.5)
+ttl = 15
+
+# ✅ GOOD — typed, env-driven, documented in .env.example
+delay = settings.retry_base_delay_seconds
+ttl = settings.realtime_cache_ttl_seconds
+```
+
+Run `ruff check .` before considering a change done.

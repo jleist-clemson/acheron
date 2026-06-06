@@ -373,3 +373,30 @@ is the whole point.
   *not* persist and replay the original response: ingest stays non-blocking (§3),
   so a matching retry is re-driven through the pipeline (deduped at the Mongo
   write) rather than served from a stored result.
+
+---
+
+## 12. Repository conventions & agent rules
+
+At my request, a Cursor coding agent codified the conventions described in this
+document into a set of project rules under `.cursor/rules/`, so that future
+AI-assisted work (and human contributors) stay aligned with the design decisions
+recorded here rather than rediscovering or diverging from them. The rules
+deliberately encode *decisions and invariants* — not boilerplate — and each is
+scoped to the files it governs:
+
+- **`project-overview.mdc`** (always on) — layering boundaries and store roles
+  (Mongo authoritative, ES derived mirror, Redis cache), the in-process-queue
+  constraint, and the rule that code and these docs must not drift.
+- **`python-standards.mdc`** — Google-style docstrings, `from __future__ import
+  annotations`, and tunables in `Settings` rather than magic numbers.
+- **`api-routes.mdc`** — thin handlers, the error→status mapping (Mongo→503,
+  ES→502, queue full→429, shutdown→503), and required response models.
+- **`testing.mdc`** — pytest/asyncio conventions and the unit-vs-integration split.
+- **`background-tasks.mdc`** — the drain-vs-cancel `stop()` decision, interruptible
+  idle, loop exception handling, and the lifespan shutdown ordering (§10).
+- **`elasticsearch-mapping.mdc`** — the immutable-mapping/reindex constraint, field
+  types (§6), and partial-failure tolerance during indexing (§4/§7).
+
+These rules are a living artifact: when a documented convention here changes, the
+corresponding rule should change with it.
