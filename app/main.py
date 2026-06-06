@@ -49,11 +49,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting Acheron — Distributed Event Processing Platform")
 
     queue = EventQueue(settings.queue_max_size)
-    dlq = DeadLetterQueue()
 
     mongo = MongoStore(settings.mongodb_uri, settings.mongodb_db)
     await mongo.connect()
     await mongo.ensure_indexes()
+
+    # The DLQ persists exhausted events to Mongo (durable, inspectable and
+    # replayable via /events/dlq) rather than holding them only in memory (§7).
+    dlq = DeadLetterQueue(sink=mongo)
 
     # Elasticsearch is a derived mirror (ARCHITECTURE.md §4), so a down ES must
     # NOT block startup — only degrade /search. Mongo (source of truth) and

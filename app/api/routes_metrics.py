@@ -12,7 +12,7 @@ router = APIRouter(tags=["metrics"])
 async def metrics(request: Request) -> dict[str, Any]:
     """Return a JSON snapshot of in-process pipeline metrics.
 
-    Surfaces queue depth, dead-letter size, worker throughput/retries, and the
+    Surfaces queue depth, dead-letter counts, worker throughput/retries, and the
     cache hit rate — the signals for operating the ingest pipeline
     (ARCHITECTURE.md §11).
 
@@ -26,7 +26,7 @@ async def metrics(request: Request) -> dict[str, Any]:
     state = request.app.state
     return {
         "queue": {"depth": state.queue.qsize, "capacity": state.queue.maxsize},
-        "dlq": {"size": state.dlq.size},
+        "dlq": state.dlq.metrics(),
         "worker": state.worker.metrics(),
         "es_indexer": state.es_indexer.metrics(),
         "cache": state.redis_cache.metrics(),

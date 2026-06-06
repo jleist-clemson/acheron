@@ -61,7 +61,7 @@ async def test_process_batch_writes_to_mongo() -> None:
     await pool._process_batch(batch)
 
     mongo.bulk_write.assert_awaited_once_with(batch)
-    assert dlq.size == 0
+    assert dlq.recorded == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -79,7 +79,7 @@ async def test_process_batch_retries_then_succeeds() -> None:
     await pool._process_batch(batch)
 
     assert mongo.bulk_write.await_count == 3
-    assert dlq.size == 0
+    assert dlq.recorded == 0
 
 
 async def test_process_batch_exhausts_retries_and_routes_to_dlq() -> None:
@@ -92,7 +92,7 @@ async def test_process_batch_exhausts_retries_and_routes_to_dlq() -> None:
 
     # max_retries=2 → 3 total attempts, then every event lands in the DLQ.
     assert mongo.bulk_write.await_count == 3
-    assert dlq.size == len(batch)
+    assert dlq.recorded == len(batch)
 
 
 # --------------------------------------------------------------------------- #
@@ -132,4 +132,4 @@ async def test_worker_drains_in_flight_queue_on_stop() -> None:
     written = sum(len(call.args[0]) for call in mongo.bulk_write.await_args_list)
     assert written == 5
     assert queue.empty is True
-    assert dlq.size == 0
+    assert dlq.recorded == 0

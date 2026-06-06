@@ -94,9 +94,11 @@ async def client(_stores: None) -> AsyncIterator[httpx.AsyncClient]:
     import app.main as main
 
     async with LifespanManager(main.app):
-        # Isolate each test: empty the events + rollups collections and the cache.
+        # Isolate each test: empty the events + rollups + dead_letter collections
+        # and the cache.
         await main.app.state.mongo._collection.delete_many({})
         await main.app.state.mongo._rollups_collection.delete_many({})
+        await main.app.state.mongo._dead_letter_collection.delete_many({})
         await main.app.state.redis_cache._redis.flushdb()
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
@@ -254,7 +256,8 @@ async def test_metrics_endpoint_reports_pipeline_state(client: httpx.AsyncClient
     assert m["queue"]["capacity"] >= 1
     assert m["queue"]["depth"] == 0  # drained
     assert m["worker"]["events_processed"] >= 1
-    assert m["dlq"]["size"] == 0
+    assert m["dlq"]["recorded"] == 0
+    assert m["dlq"]["unpersisted"] == 0
     assert "hit_rate" in m["cache"]
 
 
@@ -288,3 +291,49 @@ async def test_health_ready_tolerates_es_down(client: httpx.AsyncClient) -> None
 async def test_search_degrades_to_502_when_es_down(client: httpx.AsyncClient) -> None:
     resp = await client.get("/events/search", params={"q": "anything"})
     assert resp.status_code == 502
+
+
+async def test_dlq_persist_list_and_replay(client: httpx.AsyncClient) -> None:
+    from datetime import datetime, timezone
+
+    import app.main as main
+    from app.models import EventDocument
+
+    et = f"itest_{uuid.uuid4().hex[:8]}"
+    event_id = f"dl-{uuid.uuid4().hex}"
+    event = EventDocument(
+        event_type=et,
+        user_id="x",
+        source_url="https://t.test",
+        event_id=event_id,
+        received_at=datetime.now(timezone.utc),
+    )
+    # Simulate a batch that exhausted its retries -> persisted to the durable DLQ.
+    await main.app.state.dlq.push(event, "simulated mongo outage")
+
+    listed = (await client.get("/events/dlq")).json()
+    ours = [e for e in listed["entries"] if e["event_id"] == event_id]
+    assert len(ours) == 1
+    assert ours[0]["reason"] == "simulated mongo outage"
+    assert ours[0]["event"]["event_type"] == et
+    assert listed["total"] >= 1
+
+    # The event lives only in the DLQ — it never reached the events store.
+    pre = await client.get("/events", params={"event_type": et})
+    assert pre.json()["events"] == []
+
+    # Replay re-drives it into Mongo and clears it from the DLQ.
+    replay = await client.post(f"/events/dlq/{event_id}/replay")
+    assert replay.status_code == 200
+    assert replay.json() == {"event_id": event_id, "status": "replayed"}
+
+    data = await _poll(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
+    assert data["events"][0]["event_id"] == event_id
+
+    after = (await client.get("/events/dlq")).json()
+    assert all(e["event_id"] != event_id for e in after["entries"])
+
+
+async def test_replay_unknown_event_returns_404(client: httpx.AsyncClient) -> None:
+    resp = await client.post(f"/events/dlq/missing-{uuid.uuid4().hex}/replay")
+    assert resp.status_code == 404

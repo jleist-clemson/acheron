@@ -125,3 +125,48 @@ async def test_get_event_type_rollup_returns_stored_doc() -> None:
 
     assert got["total"] == 1
     coll.find_one.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------- #
+# Dead-letter queue (durable sink)
+# --------------------------------------------------------------------------- #
+
+
+async def test_persist_dead_letters_inserts_records() -> None:
+    store, coll = _store_with_collection()
+
+    await store.persist_dead_letters([{"_id": "e1", "event_id": "e1", "reason": "x"}])
+
+    coll.insert_many.assert_awaited_once()
+
+
+async def test_persist_dead_letters_empty_is_noop() -> None:
+    store, coll = _store_with_collection()
+
+    await store.persist_dead_letters([])
+
+    coll.insert_many.assert_not_awaited()
+
+
+async def test_list_dead_letters_returns_entries_and_total() -> None:
+    store, coll, cursor = _store_with_find([{"event_id": "e1", "reason": "x"}])
+
+    entries, total = await store.list_dead_letters(limit=10, offset=0)
+
+    assert entries == [{"event_id": "e1", "reason": "x"}]
+    assert total == 999  # from count_documents
+    coll.count_documents.assert_awaited_once()
+
+
+async def test_get_dead_letter_returns_record() -> None:
+    store, coll = _store_with_collection()
+    coll.find_one = AsyncMock(return_value={"event_id": "e1", "event": {}})
+
+    assert await store.get_dead_letter("e1") == {"event_id": "e1", "event": {}}
+
+
+async def test_delete_dead_letter_reports_deletion() -> None:
+    store, coll = _store_with_collection()
+    coll.delete_one = AsyncMock(return_value=MagicMock(deleted_count=1))
+
+    assert await store.delete_dead_letter("e1") is True

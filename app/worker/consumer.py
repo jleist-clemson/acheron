@@ -4,7 +4,8 @@ Design notes (see ARCHITECTURE.md §5 for the full rationale):
 - N concurrent consumer tasks run inside the FastAPI process via asyncio.
 - Each task drains the queue in batches (up to WORKER_BATCH_SIZE).
 - Mongo write failures are retried with exponential backoff + jitter.
-- Events that exhaust MAX_RETRIES are moved to the in-memory DLQ.
+- Events that exhaust MAX_RETRIES are routed to the durable DLQ (persisted to
+  Mongo, inspectable/replayable via /events/dlq).
 - The worker writes only to Mongo (the source of truth). ES is populated
   strictly downstream by the EsIndexer reading the outbox (es_indexed flag),
   so there is no in-line dual write to diverge on a crash (§4).
@@ -107,7 +108,7 @@ class WorkerPool:
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
-        logger.info("Worker pool stopped (DLQ size=%d)", self._dlq.size)
+        logger.info("Worker pool stopped (DLQ recorded=%d)", self._dlq.recorded)
 
     # ------------------------------------------------------------------
     # Internal
@@ -183,8 +184,7 @@ class WorkerPool:
                 self._max_retries,
                 len(batch),
             )
-            for event in batch:
-                self._dlq.push(event, str(last_exc))
+            await self._dlq.push_many(batch, str(last_exc))
             return
 
         self._batches_processed += 1

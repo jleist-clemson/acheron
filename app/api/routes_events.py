@@ -14,7 +14,7 @@ from pymongo.errors import PyMongoError
 
 from app.cache.redis_cache import RedisCache
 from app.ingestion.service import IngestionClosed, IngestionService
-from app.models import EventCreate
+from app.models import EventCreate, EventDocument
 from app.storage.es import ElasticsearchStore
 from app.storage.mongo import MongoStore
 
@@ -223,6 +223,83 @@ async def search_events(
             detail="Search backend unavailable",
         )
     return {"hits": hits, "total": total, "query": q, "size": size, "offset": offset}
+
+
+@router.get("/dlq", summary="List dead-lettered events")
+async def list_dead_letters(
+    limit: int = Query(50, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    mongo: MongoStore = Depends(_mongo),
+) -> dict[str, Any]:
+    """List events that exhausted their retries and were dead-lettered.
+
+    Dead-letters are persisted durably (ARCHITECTURE.md §7), so they survive a
+    restart and can be inspected here and re-driven via
+    ``POST /events/dlq/{event_id}/replay``.
+
+    Args:
+        limit: Maximum number of records to return.
+        offset: Number of leading records to skip.
+        mongo: MongoDB store (injected).
+
+    Returns:
+        ``{"entries": [...], "limit": <int>, "offset": <int>, "total": <int>}``.
+
+    Raises:
+        HTTPException: 503 if the event store is unavailable.
+    """
+    try:
+        entries, total = await mongo.list_dead_letters(limit=limit, offset=offset)
+    except PyMongoError as exc:
+        logger.error("DLQ list failed (%s): %s", type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Event store temporarily unavailable",
+        )
+    return {"entries": entries, "limit": limit, "offset": offset, "total": total}
+
+
+@router.post("/dlq/{event_id}/replay", summary="Replay a dead-lettered event")
+async def replay_dead_letter(
+    event_id: str,
+    mongo: MongoStore = Depends(_mongo),
+) -> dict[str, Any]:
+    """Re-drive a dead-lettered event back into MongoDB.
+
+    Rewrites the stored event to Mongo (the original failure point) and, on
+    success, removes it from the dead-letter store; Elasticsearch picks it up
+    downstream via the outbox. The write is idempotent on ``event_id`` and the
+    record is retained if the rewrite fails, so a replay is safe to retry.
+
+    Args:
+        event_id: The dead-lettered event's id.
+        mongo: MongoDB store (injected).
+
+    Returns:
+        ``{"event_id": <str>, "status": "replayed"}``.
+
+    Raises:
+        HTTPException: 404 if no dead-letter has that id; 503 if the rewrite
+            fails (the record is left in the DLQ for a later retry).
+    """
+    try:
+        record = await mongo.get_dead_letter(event_id)
+        if record is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No dead-lettered event with that id",
+            )
+        await mongo.bulk_write([EventDocument(**record["event"])])
+        await mongo.delete_dead_letter(event_id)
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        logger.error("DLQ replay failed for %s (%s): %s", event_id, type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Event store unavailable; event retained in the DLQ",
+        )
+    return {"event_id": event_id, "status": "replayed"}
 
 
 @router.get("", summary="List events with optional filters")

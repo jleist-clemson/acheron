@@ -63,9 +63,11 @@ uvicorn app.main:app --reload
 | `GET` | `/events/stats` | Event counts grouped by `event_type`; unfiltered call served from a precomputed rollup (`source` field), `from`/`to` + `interval=minute\|hour\|day\|week` fall back to live aggregation |
 | `GET` | `/events/stats/realtime` | Per-type counts over a recent window, cache-aside via Redis (degrades to Mongo if Redis is down) |
 | `GET` | `/events/search` | Search via Elasticsearch: full-text `?q=` (matches `event_type`, `source_url`, and **event metadata**) and/or filters (`event_type`, `user_id`, `source_url`, `from`, `to`) with `size`/`offset` |
+| `GET` | `/events/dlq` | List events that exhausted their retries and were dead-lettered (durable — survives restart), `limit`/`offset` |
+| `POST` | `/events/dlq/{event_id}/replay` | Re-drive a dead-lettered event back into MongoDB; clears it from the DLQ on success (idempotent, retry-safe) |
 | `GET` | `/health` | Liveness probe |
 | `GET` | `/health/ready` | Readiness probe — reports all three stores; gates on MongoDB only (ES/Redis are degradable, reported but non-fatal) |
-| `GET` | `/metrics` | Operational snapshot: queue depth, DLQ size, worker throughput/retries, cache hit rate |
+| `GET` | `/metrics` | Operational snapshot: queue depth, DLQ counts, worker throughput/retries, cache hit rate |
 
 Interactive docs: `http://localhost:8000/docs`
 
@@ -89,12 +91,17 @@ pytest -v          # integration tests are deselected by default
 - **Backpressure** (`test_backpressure.py`) — `EventQueue` raises `QueueFull` at
   capacity instead of blocking; `IngestionService` assigns server-side fields,
   propagates `QueueFull` (→ 429), and rejects ingest once shut down (→ 503).
-- **Worker** (`test_worker.py`) — Mongo-then-ES write order; retry with backoff
-  then success; retries exhausted → events routed to the DLQ and ES skipped;
-  ES failure is best-effort (no DLQ, no raise); graceful drain on `stop()`.
+- **Worker** (`test_worker.py`) — batched write to Mongo (the source of truth;
+  ES is populated downstream by the `EsIndexer`, not the worker); retry with
+  backoff then success; retries exhausted → every event routed to the DLQ;
+  graceful drain on `stop()`.
+- **Dead-letter queue** (`test_dlq.py`) — exhausted events persist to the durable
+  sink; with no sink (or on a persist failure) they buffer in memory and flush on
+  the next successful persist; lifetime / `unpersisted` counters.
 - **Stores** (`test_search.py`, `test_es_store.py`, `test_mongo_store.py`) — ES
   bool-query construction; bulk-index per-document failure tolerance; the
-  `flattened` metadata mapping; within-batch dedup by `event_id`.
+  `flattened` metadata mapping; within-batch dedup by `event_id`; the durable
+  dead-letter store (persist / list / get / delete).
 
 **Integration tests** — drive the real app (lifespan, in-process worker, stores)
 against ephemeral **MongoDB + Redis** containers via `testcontainers`. Requires
@@ -107,7 +114,8 @@ pytest -m integration -v
 
 `test_integration.py` covers the end-to-end POST → worker → GET round-trip,
 idempotency dedup, filters/pagination, the `/stats` aggregation (incl. weekly
-buckets), the Redis cache-aside miss→hit, rate limiting (429), and — with
+buckets), the Redis cache-aside miss→hit, rate limiting (429), the durable DLQ
+(persist → `GET /events/dlq` → replay → re-drive into Mongo), and — with
 Elasticsearch pointed at a dead address — the graceful-degradation contract
 (`/search` → 502, readiness stays `degraded` not 503, durable pipeline intact).
 

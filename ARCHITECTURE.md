@@ -157,8 +157,8 @@ workers `get()`, process a batch, and `task_done()`.
 | Durability | Lost on process exit | Persisted across consumers/restarts |
 | Cross-process consumers | No — single process only | Yes — many workers, many hosts |
 | Visibility timeout | Simulated in-memory | Native; redelivery if not deleted in time |
-| Redrive / DLQ | Hand-rolled | Native redrive policy |
-| At-least-once across restarts | No | Yes |
+| Redrive / DLQ | Hand-rolled, persisted to Mongo + replayable (`/events/dlq`) | Native redrive policy |
+| At-least-once across restarts | No (queue is in-memory; DLQ persists) | Yes |
 
 **If this were real SQS:** the API would `SendMessage` and the worker would long-poll
 `ReceiveMessage`, process, then `DeleteMessage` only on success (delete-on-ack is
@@ -222,12 +222,18 @@ notes.)_
 ## 7. Failure modes
 
 - **MongoDB unavailable.** Worker write fails → event retried with backoff →
-  exhausted retries land in the DLQ rather than being dropped silently. The API
+  exhausted retries are routed to the **durable DLQ** (a Mongo `dead_letter`
+  collection), inspectable at `GET /events/dlq` and re-drivable via
+  `POST /events/dlq/{event_id}/replay` rather than being dropped silently. The API
   keeps accepting and enqueuing (ingestion stays up); the queue absorbs the
   backlog until it fills, then applies backpressure. Read endpoints depending on
-  Mongo degrade to errors with clear `503`s. **Risk:** a long Mongo outage fills
-  the in-memory queue and in-flight events are lost on restart — the durability
-  gap again.
+  Mongo degrade to errors with clear `503`s. Because the dead-letter usually *is*
+  a Mongo outage, the DLQ persist can fail too; the entry is then buffered in
+  memory (surfaced as `dlq.unpersisted` in `/metrics`) and flushed on the next
+  successful persist, so it survives within the running process. **Residual
+  risk:** a long Mongo outage that fills the in-memory queue *and* leaves
+  dead-letters un-flushed loses those events if the process also restarts — the
+  durability gap a real broker (with its own durable redrive) closes.
 - **Worker crashes mid-batch.** Any events already pulled from the queue but not
   yet committed are lost (in-process queue has no redelivery). Batching widens
   this window, so batch size is a tunable tradeoff between throughput and
@@ -339,9 +345,16 @@ is the whole point.
   `metadata` shape changes don't silently break consumers. A fuller version
   would add per-version validation/migration of the `metadata` payload.
 - **Observability:** structured logs (in place) and metrics — *implemented* as a
-  JSON `GET /metrics` snapshot (queue depth, retry counts, DLQ size, cache hit
+  JSON `GET /metrics` snapshot (queue depth, retry counts, DLQ counts, cache hit
   rate). Still to add: Prometheus-format exposition and distributed tracing
   across the ingest path.
+- **Durable, replayable DLQ** — *implemented*: events that exhaust their retries
+  are persisted to a Mongo `dead_letter` collection (not just an in-memory list),
+  listable at `GET /events/dlq` and re-drivable via
+  `POST /events/dlq/{event_id}/replay`, which rewrites the event to Mongo (the
+  outbox then re-indexes it to ES) and clears the record. A persist failure
+  during a Mongo outage falls back to an in-memory buffer that flushes on
+  recovery; a real broker's native redrive (§5) is the production replacement.
 - **Idempotency keys** on ingest — *implemented*: an optional `Idempotency-Key`
   header maps to a deterministic `event_id` (`uuid5`), so duplicate submissions
   collapse at the Mongo write. A fuller version would persist a key→response

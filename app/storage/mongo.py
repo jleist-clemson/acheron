@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 _COLLECTION = "events"
 _ROLLUPS = "rollups"
 _ROLLUP_ID = "event_type_counts"
+_DEAD_LETTER = "dead_letter"
 
 
 class MongoStore:
@@ -60,6 +61,12 @@ class MongoStore:
             raise RuntimeError("MongoStore.connect() has not been called")
         return self._client[self._db_name][_ROLLUPS]
 
+    @property
+    def _dead_letter_collection(self) -> AsyncIOMotorCollection:
+        if self._client is None:
+            raise RuntimeError("MongoStore.connect() has not been called")
+        return self._client[self._db_name][_DEAD_LETTER]
+
     async def ensure_indexes(self) -> None:
         """Idempotently create the indexes described in ARCHITECTURE.md §6."""
         coll = self._collection
@@ -77,6 +84,10 @@ class MongoStore:
         await coll.create_index([("timestamp", -1)], background=True)
         # Serves the EsIndexer's scan for events still pending ES indexing.
         await coll.create_index([("es_indexed", 1)], background=True)
+        # Newest-failure-first listing of dead-lettered events for /events/dlq.
+        await self._dead_letter_collection.create_index(
+            [("failed_at", -1)], background=True
+        )
         logger.info("MongoDB indexes ensured")
 
     async def ping(self) -> bool:
@@ -320,6 +331,68 @@ class MongoStore:
         await self._collection.update_many(
             {"_id": {"$in": event_ids}}, {"$set": {"es_indexed": True}}
         )
+
+    async def persist_dead_letters(self, docs: list[dict[str, Any]]) -> None:
+        """Durably store events that exhausted their retries (the DLQ sink).
+
+        Backs :class:`app.queue.dlq.DeadLetterQueue`'s durable sink. Records are
+        keyed by ``event_id`` (as ``_id``), so re-recording the same event is a
+        harmless no-op rather than a duplicate.
+
+        Args:
+            docs: Dead-letter records to insert. An empty list is a no-op.
+        """
+        if not docs:
+            return
+        try:
+            await self._dead_letter_collection.insert_many(docs, ordered=False)
+        except BulkWriteError as exc:
+            # Duplicate _id = the same event already dead-lettered; not an error.
+            n_errors = len(exc.details.get("writeErrors", []))
+            logger.warning("Dead-letter insert: %d duplicate(s) skipped", n_errors)
+
+    async def list_dead_letters(
+        self, *, limit: int = 50, offset: int = 0
+    ) -> tuple[list[dict[str, Any]], int]:
+        """List dead-lettered events, newest failure first.
+
+        Args:
+            limit: Maximum number of records to return.
+            offset: Number of leading records to skip.
+
+        Returns:
+            An ``(entries, total)`` tuple: the page of dead-letter records
+            (``_id`` projected out — ``event_id`` carries it) and the exact
+            total count (the collection is expected to stay small).
+        """
+        coll = self._dead_letter_collection
+        cursor = coll.find({}, {"_id": 0}).sort("failed_at", -1).skip(offset).limit(limit)
+        entries = await cursor.to_list(length=limit)
+        total = await coll.count_documents({})
+        return entries, total
+
+    async def get_dead_letter(self, event_id: str) -> Optional[dict[str, Any]]:
+        """Return a single dead-letter record by event id, or None if absent.
+
+        Args:
+            event_id: The dead-lettered event's id.
+
+        Returns:
+            The stored record (``_id`` projected out), or None.
+        """
+        return await self._dead_letter_collection.find_one({"_id": event_id}, {"_id": 0})
+
+    async def delete_dead_letter(self, event_id: str) -> bool:
+        """Remove a dead-letter record (e.g. after a successful replay).
+
+        Args:
+            event_id: The dead-lettered event's id.
+
+        Returns:
+            True if a record was deleted, False if none matched.
+        """
+        result = await self._dead_letter_collection.delete_one({"_id": event_id})
+        return result.deleted_count > 0
 
 
 def _dedupe_by_id(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
