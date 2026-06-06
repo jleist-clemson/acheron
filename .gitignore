@@ -31,3 +31,6 @@ htmlcov/
 .vscode/
 *.swp
 *.swo
+
+# Claude Code local/personal settings (committed rules live in .claude/rules/)
+.claude/settings.local.json

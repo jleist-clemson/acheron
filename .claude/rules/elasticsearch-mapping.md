@@ -1,0 +1,34 @@
+---
+paths:
+  - "app/storage/es.py"
+  - "app/worker/es_indexer.py"
+---
+
+# Elasticsearch Mapping & Indexing
+
+ES is a **derived, rebuildable mirror** of Mongo — never the source of truth.
+The explicit mapping is intentional; document any change in `ARCHITECTURE.md §6`.
+
+## Mapping is immutable — changes require a reindex
+
+A field's mapping type cannot change on an existing index. Editing `_MAPPING`
+only affects newly created indices, so any type change means: create a new
+index with the new mapping and reindex from Mongo (the outbox is the source).
+Call this out explicitly in the PR/commit and the architecture doc.
+
+## Field-type conventions (don't drift)
+
+- Exact-match / aggregatable fields (`event_type`, `user_id`) → `keyword`.
+- `source_url` → `keyword` with a `text` sub-field for tokenized search.
+- `metadata` → `flattened`: schemaless keys can't explode the mapping and mixed
+  value types across events can't cause index-time conflicts. Trade-off: leaves
+  are exact-match keyword, not analyzed full-text. If tokenized search over
+  metadata *values* is needed, that's a mapping change (reindex — see above).
+
+## Indexing must tolerate partial failure
+
+`ensure_mapping()` is idempotent and may run lazily (ES can be down at startup).
+Bulk index with `raise_on_error=False` so one malformed document doesn't discard
+the rest of the batch; log the failures. A transport-level error (ES
+unreachable) **should** propagate so the `EsIndexer` leaves events unindexed and
+retries them next pass — that's the outbox guarantee, not a bug to swallow.
