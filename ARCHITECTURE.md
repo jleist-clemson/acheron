@@ -408,3 +408,27 @@ are organized as:
 These are a living artifact: when a convention here changes, update **both** the
 `.cursor/` and `.claude/` mirrors (and `AGENTS.md`) so the tools and docs stay
 consistent.
+
+---
+
+## 13. Continuous integration
+
+I decided to add a functioning CI pipeline (GitHub Actions,
+`.github/workflows/ci.yml`) that runs on every push to `main` and on pull
+requests. It enforces, automatically, the same commands the rules and README ask
+contributors to run, with three parallel jobs:
+
+- **lint** — `ruff check .` (the pydocstyle/Google-style gate from §12).
+- **unit tests** — `pytest`; hermetic and fast, since `pytest.ini` deselects the
+  `integration` marker by default.
+- **integration tests** — `pytest -m integration`, which spins up real MongoDB,
+  Redis, and Elasticsearch via testcontainers (Docker is available on the
+  hosted runners), so the end-to-end pipeline and the ES contract are exercised
+  CI-side, not just locally. Bounded with a timeout so a stuck container can't
+  hang the workflow.
+
+Surfacing the integration suite in CI also hardened it: it caught a flaky
+assertion that read the in-memory `events_processed` metric immediately after a
+document became queryable in Mongo — a real (benign) consistency lag, since the
+counter ticks only when the worker's `bulk_write` coroutine resumes (§5). The
+test now polls the metric rather than asserting once.
