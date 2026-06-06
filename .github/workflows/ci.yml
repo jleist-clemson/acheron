@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.15.15
+      - run: ruff check .
+
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      # pytest.ini deselects `-m integration`, so this is the fast, hermetic suite.
+      - run: pytest
+
+  integration:
+    name: integration tests (testcontainers)
+    runs-on: ubuntu-latest
+    # Spins up real MongoDB / Redis / Elasticsearch via testcontainers. Docker is
+    # preinstalled on ubuntu-latest runners. Bounded so a stuck container can't
+    # hang the workflow.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -m integration
