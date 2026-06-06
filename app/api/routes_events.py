@@ -7,11 +7,20 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pymongo.errors import PyMongoError
 
+from app.api.schemas import (
+    DeadLetterListResponse,
+    EventListResponse,
+    IngestResponse,
+    RealtimeStatsResponse,
+    ReplayResponse,
+    SearchResponse,
+    StatsResponse,
+)
 from app.cache.redis_cache import RedisCache
 from app.ingestion.service import IngestionClosed, IngestionService
 from app.models import EventCreate, EventDocument
@@ -79,21 +88,21 @@ async def get_realtime_stats(
     request: Request,
     mongo: MongoStore = Depends(_mongo),
     cache: RedisCache = Depends(_cache),
-) -> dict[str, Any]:
+) -> RealtimeStatsResponse:
     """Return per-``event_type`` counts over a recent window, served cache-aside.
 
     The cached entry expires after ``REALTIME_CACHE_TTL_SECONDS``; a Redis outage
     degrades transparently to recomputing from Mongo (ARCHITECTURE.md §9).
 
     Returns:
-        ``{"data": <summary>, "cached": <bool>}``.
+        The realtime summary and whether it was served from cache.
 
     Raises:
         HTTPException: 503 if the Mongo aggregation is unavailable.
     """
     settings = request.app.state.settings
 
-    async def compute() -> dict[str, Any]:
+    async def compute() -> dict:
         return await mongo.aggregate_recent_counts(settings.realtime_window_seconds)
 
     try:
@@ -108,7 +117,7 @@ async def get_realtime_stats(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Event store temporarily unavailable",
         )
-    return {"data": data, "cached": hit}
+    return RealtimeStatsResponse(data=data, cached=hit)
 
 
 @router.get("/stats", summary="Event counts grouped by type")
@@ -121,13 +130,13 @@ async def get_stats(
         description="Optionally bucket counts by time: minute | hour | day | week",
     ),
     mongo: MongoStore = Depends(_mongo),
-) -> dict[str, Any]:
+) -> StatsResponse:
     """Aggregate event counts per ``event_type`` (ARCHITECTURE.md §4/§6).
 
     The unfiltered, non-bucketed call is served from a precomputed rollup
     (cheap, refreshed on an interval — ``source: "rollup"`` with ``computed_at``);
     any filter or ``interval`` falls back to an exact live aggregation
-    (``source: "live"``).
+    (``source: "live"``, ``computed_at`` null).
 
     Args:
         from_ts: Inclusive lower bound on ``timestamp`` (``from`` query param).
@@ -137,8 +146,9 @@ async def get_stats(
         mongo: MongoDB store (injected).
 
     Returns:
-        ``{"data": [...], "total": <int>, "interval": <str|None>, "source": <str>}``
-        (plus ``computed_at`` when served from the rollup).
+        Counts per ``event_type`` (with a ``bucket`` per row when bucketed), the
+        total, the requested ``interval``, the ``source``, and ``computed_at``
+        (set only for the rollup).
 
     Raises:
         HTTPException: 503 if the Mongo aggregation is unavailable.
@@ -147,13 +157,13 @@ async def get_stats(
         if from_ts is None and to_ts is None and interval is None:
             rollup = await mongo.get_event_type_rollup()
             if rollup is not None:
-                return {
-                    "data": rollup["counts"],
-                    "total": rollup["total"],
-                    "interval": None,
-                    "source": "rollup",
-                    "computed_at": rollup["computed_at"],
-                }
+                return StatsResponse(
+                    data=rollup["counts"],
+                    total=rollup["total"],
+                    interval=None,
+                    source="rollup",
+                    computed_at=rollup["computed_at"],
+                )
         data = await mongo.aggregate_counts(
             from_ts=from_ts, to_ts=to_ts, interval=interval
         )
@@ -163,12 +173,12 @@ async def get_stats(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Event store temporarily unavailable",
         )
-    return {
-        "data": data,
-        "total": sum(row["count"] for row in data),
-        "interval": interval,
-        "source": "live",
-    }
+    return StatsResponse(
+        data=data,
+        total=sum(row["count"] for row in data),
+        interval=interval,
+        source="live",
+    )
 
 
 @router.get("/search", summary="Full-text search via Elasticsearch")
@@ -182,7 +192,7 @@ async def search_events(
     size: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
     es: ElasticsearchStore = Depends(_es),
-) -> dict[str, Any]:
+) -> SearchResponse:
     """Search events via Elasticsearch: free text and/or exact-match filters.
 
     Args:
@@ -197,8 +207,8 @@ async def search_events(
         es: Elasticsearch store (injected).
 
     Returns:
-        ``{"hits": [...], "total": <int>, "query": <str|None>, "size": <int>,
-        "offset": <int>}``.
+        The matching hits (event ``_source`` bodies), total match count, and the
+        echoed ``query``/``size``/``offset``.
 
     Raises:
         HTTPException: 502 if the search backend is unavailable.
@@ -222,7 +232,7 @@ async def search_events(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Search backend unavailable",
         )
-    return {"hits": hits, "total": total, "query": q, "size": size, "offset": offset}
+    return SearchResponse(hits=hits, total=total, query=q, size=size, offset=offset)
 
 
 @router.get("/dlq", summary="List dead-lettered events")
@@ -230,7 +240,7 @@ async def list_dead_letters(
     limit: int = Query(50, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     mongo: MongoStore = Depends(_mongo),
-) -> dict[str, Any]:
+) -> DeadLetterListResponse:
     """List events that exhausted their retries and were dead-lettered.
 
     Dead-letters are persisted durably (ARCHITECTURE.md §7), so they survive a
@@ -243,7 +253,7 @@ async def list_dead_letters(
         mongo: MongoDB store (injected).
 
     Returns:
-        ``{"entries": [...], "limit": <int>, "offset": <int>, "total": <int>}``.
+        The page of dead-letter records and the total count.
 
     Raises:
         HTTPException: 503 if the event store is unavailable.
@@ -256,14 +266,16 @@ async def list_dead_letters(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Event store temporarily unavailable",
         )
-    return {"entries": entries, "limit": limit, "offset": offset, "total": total}
+    return DeadLetterListResponse(
+        entries=entries, limit=limit, offset=offset, total=total
+    )
 
 
 @router.post("/dlq/{event_id}/replay", summary="Replay a dead-lettered event")
 async def replay_dead_letter(
     event_id: str,
     mongo: MongoStore = Depends(_mongo),
-) -> dict[str, Any]:
+) -> ReplayResponse:
     """Re-drive a dead-lettered event back into MongoDB.
 
     Rewrites the stored event to Mongo (the original failure point) and, on
@@ -276,7 +288,7 @@ async def replay_dead_letter(
         mongo: MongoDB store (injected).
 
     Returns:
-        ``{"event_id": <str>, "status": "replayed"}``.
+        The replayed ``event_id`` and a ``replayed`` status.
 
     Raises:
         HTTPException: 404 if no dead-letter has that id; 503 if the rewrite
@@ -299,7 +311,7 @@ async def replay_dead_letter(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Event store unavailable; event retained in the DLQ",
         )
-    return {"event_id": event_id, "status": "replayed"}
+    return ReplayResponse(event_id=event_id, status="replayed")
 
 
 @router.get("", summary="List events with optional filters")
@@ -315,7 +327,7 @@ async def list_events(
         False, description="Also compute the exact match count (an extra query)"
     ),
     mongo: MongoStore = Depends(_mongo),
-) -> dict[str, Any]:
+) -> EventListResponse:
     """List events from MongoDB, filtered and paginated.
 
     Pagination returns ``has_more`` cheaply (a single indexed query); request
@@ -333,8 +345,8 @@ async def list_events(
         mongo: MongoDB store (injected).
 
     Returns:
-        ``{"events": [...], "limit": <int>, "offset": <int>, "has_more": <bool>,
-        "total": <int|null>}`` (``total`` is null unless ``with_total`` is set).
+        The page of events with ``has_more``; ``total`` is null unless
+        ``with_total`` is set.
 
     Raises:
         HTTPException: 503 if the event store is unavailable.
@@ -358,13 +370,13 @@ async def list_events(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Event store temporarily unavailable",
         )
-    return {
-        "events": events,
-        "limit": limit,
-        "offset": offset,
-        "has_more": has_more,
-        "total": total,
-    }
+    return EventListResponse(
+        events=events,
+        limit=limit,
+        offset=offset,
+        has_more=has_more,
+        total=total,
+    )
 
 
 @router.post(
@@ -377,7 +389,7 @@ async def create_event(
     event: EventCreate,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     service: IngestionService = Depends(_ingestion),
-) -> dict[str, Any]:
+) -> IngestResponse:
     """Validate and enqueue an event for asynchronous processing.
 
     Args:
@@ -387,7 +399,7 @@ async def create_event(
         service: Ingestion service (injected).
 
     Returns:
-        ``{"event_id": <str>, "received_at": <iso8601>}`` with HTTP 202.
+        The assigned ``event_id`` and server ``received_at``, with HTTP 202.
 
     Raises:
         HTTPException: 429 if the per-client rate limit is exceeded or the
@@ -405,4 +417,4 @@ async def create_event(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Event queue is full — retry after a short backoff",
         )
-    return {"event_id": doc.event_id, "received_at": doc.received_at.isoformat()}
+    return IngestResponse(event_id=doc.event_id, received_at=doc.received_at)

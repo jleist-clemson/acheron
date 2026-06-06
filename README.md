@@ -69,6 +69,11 @@ uvicorn app.main:app --reload
 | `GET` | `/health/ready` | Readiness probe — reports all three stores; gates on MongoDB only (ES/Redis are degradable, reported but non-fatal) |
 | `GET` | `/metrics` | Operational snapshot: queue depth, DLQ counts, worker throughput/retries, cache hit rate |
 
+All `/events*` responses are typed via Pydantic response models
+(`app/api/schemas.py`), so the OpenAPI schema — and any generated clients —
+reflect the exact response shape. Nullable fields (`total`, `bucket`,
+`computed_at`) are always present for a stable contract.
+
 Interactive docs: `http://localhost:8000/docs`
 
 ---
@@ -102,6 +107,9 @@ pytest -v          # integration tests are deselected by default
   bool-query construction; bulk-index per-document failure tolerance; the
   `flattened` metadata mapping; within-batch dedup by `event_id`; the durable
   dead-letter store (persist / list / get / delete).
+- **API contract** (`test_openapi.py`) — the events routes advertise their typed
+  Pydantic response models in the OpenAPI document (guards against a route
+  silently reverting to an untyped `dict`).
 
 **Integration tests** — drive the real app (lifespan, in-process worker, stores)
 against ephemeral **MongoDB + Redis** containers via `testcontainers`. Requires

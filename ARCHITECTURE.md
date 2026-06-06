@@ -75,7 +75,7 @@ most-tolerant-of-staleness read.
 
 | Component | Owns | Explicitly does **not** own |
 |---|---|---|
-| **API (FastAPI)** | Request validation, ingest rate limiting (Redis-backed fixed window, configurable; the natural home for auth too, which isn't implemented), enqueue, serving reads. Returns `202 Accepted` on ingest — it never blocks on a DB write. | Persistence. The API must stay stateless so it can scale on request load alone. |
+| **API (FastAPI)** | Request validation, ingest rate limiting (Redis-backed fixed window, configurable; the natural home for auth too, which isn't implemented), enqueue, serving reads behind typed Pydantic response models (accurate OpenAPI). Returns `202 Accepted` on ingest — it never blocks on a DB write. | Persistence. The API must stay stateless so it can scale on request load alone. |
 | **Queue (`asyncio.Queue`)** | Buffering between fast producers and slower consumers; applying backpressure when full. | Durability. Contents are lost if the process dies (see §7). |
 | **Worker** | Draining the queue, deduplication, batching writes, retry/backoff, routing exhausted events to the DLQ, persisting to Mongo. (ES is indexed downstream from the outbox by the EsIndexer.) | Request handling. Its scaling signal is queue depth, not HTTP traffic. |
 | **MongoDB** | **Source of truth.** Flexible event documents (`metadata` is schemaless) and the aggregation pipelines behind `/stats`. | Full-text search. |

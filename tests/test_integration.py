@@ -218,12 +218,15 @@ async def test_stats_aggregation(client: httpx.AsyncClient) -> None:
     assert stats["source"] == "rollup"  # served from the precomputed rollup
     assert counts.get(a) == 3
     assert counts.get(b) == 2
+    assert stats["computed_at"] is not None  # the rollup records when it was computed
+    assert all("bucket" in row for row in stats["data"])  # stable schema (null here)
 
     # Bucketed queries bypass the rollup with an exact live aggregation.
     for unit in ("hour", "day", "week"):
         live = (await client.get("/events/stats", params={"interval": unit})).json()
         assert live["source"] == "live"
         assert live["total"] == 5
+        assert live["computed_at"] is None  # only the rollup sets this
         assert all("bucket" in row for row in live["data"])
 
     # An unsupported bucket unit is rejected by validation.
