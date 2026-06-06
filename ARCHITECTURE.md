@@ -186,6 +186,12 @@ notes.)_
   compound indexes above can't serve a sort-only-by-`timestamp` query, so this
   single-field index is the minimum addition that keeps the unfiltered path
   index-covered.
+- **`{ es_indexed: 1, received_at: 1 }`, partial on `{ es_indexed: false }`** —
+  the outbox scan the EsIndexer runs (pending events, oldest first). Made
+  *partial* so it indexes only the un-indexed tail and shrinks as events drain to
+  ES, rather than carrying the whole (low-selectivity, two-valued) collection;
+  the compound shape covers both the `es_indexed` equality match and the
+  `received_at` sort (ESR), so the scan is never an in-memory sort.
 - _(TODO: confirm against implementation)_ possibly **`{ source_url: 1 }`** if
   source filtering proves hot; otherwise left off.
 

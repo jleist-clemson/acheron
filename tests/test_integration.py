@@ -361,3 +361,17 @@ async def test_dlq_persist_list_and_replay(client: httpx.AsyncClient) -> None:
 async def test_replay_unknown_event_returns_404(client: httpx.AsyncClient) -> None:
     resp = await client.post(f"/events/dlq/missing-{uuid.uuid4().hex}/replay")
     assert resp.status_code == 404
+
+
+async def test_outbox_index_is_partial_and_covers_sort(client: httpx.AsyncClient) -> None:
+    import app.main as main
+
+    info = await main.app.state.mongo._collection.index_information()
+    outbox = info.get("outbox_pending")
+    assert outbox is not None
+    # Equality on es_indexed, then the received_at sort (ESR) — covers the scan.
+    assert [field for field, _ in outbox["key"]] == ["es_indexed", "received_at"]
+    # Partial over only the un-indexed tail, so the index stays tiny.
+    assert outbox.get("partialFilterExpression") == {"es_indexed": False}
+    # The superseded low-selectivity single-field index must be gone.
+    assert "es_indexed_1" not in info

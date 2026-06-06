@@ -126,7 +126,8 @@ pytest -m integration -v
 `test_integration.py` covers the end-to-end POST → worker → GET round-trip,
 idempotency dedup and key-reuse conflict (409), filters/pagination, the
 `/stats` aggregation (incl. weekly
-buckets), the Redis cache-aside miss→hit, rate limiting (429), the durable DLQ
+buckets), the Redis cache-aside miss→hit, rate limiting (429), the partial outbox index
+contract, the durable DLQ
 (persist → `GET /events/dlq` → replay → re-drive into Mongo), and — with
 Elasticsearch pointed at a dead address — the graceful-degradation contract
 (`/search` → 502, readiness stays `degraded` not 503, durable pipeline intact).

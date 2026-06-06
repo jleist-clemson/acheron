@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
-from pymongo.errors import BulkWriteError
+from pymongo.errors import BulkWriteError, OperationFailure
 
 from app.models import EventDocument
 
@@ -82,8 +82,22 @@ class MongoStore:
         # limit on large collections. (Beyond ARCHITECTURE.md §6's compound
         # indexes, which only cover the filtered query paths.)
         await coll.create_index([("timestamp", -1)], background=True)
-        # Serves the EsIndexer's scan for events still pending ES indexing.
-        await coll.create_index([("es_indexed", 1)], background=True)
+        # Outbox scan for the EsIndexer: events still pending ES indexing,
+        # oldest first. A *partial* index over only the un-indexed tail stays
+        # tiny (rows drop out once indexed) and follows ESR — equality on
+        # es_indexed, then the received_at sort — so the scan is fully covered
+        # and never falls back to an in-memory sort. Supersedes the prior
+        # low-selectivity single-field {es_indexed: 1} index, which is dropped.
+        try:
+            await coll.drop_index("es_indexed_1")
+        except OperationFailure:
+            pass  # never existed (fresh DB) or already replaced
+        await coll.create_index(
+            [("es_indexed", 1), ("received_at", 1)],
+            name="outbox_pending",
+            partialFilterExpression={"es_indexed": False},
+            background=True,
+        )
         # Newest-failure-first listing of dead-lettered events for /events/dlq.
         await self._dead_letter_collection.create_index(
             [("failed_at", -1)], background=True
