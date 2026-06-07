@@ -507,3 +507,23 @@ at-least-once) and scales nearly unbounded — the right default. FIFO buys
 per-`MessageGroupId` ordering and content-based dedup but caps throughput
 (~300 msg/s, 3000 batched) per group; only worth it if a consumer needs strict
 per-user (or per-key) ordering, which this workload doesn't.
+
+**Beyond delivery semantics — managed-service properties.** Everything above is
+about mechanics; a managed broker also brings operational properties the
+in-process queue simply can't:
+
+- **Access control.** IAM gives least-privilege, per-principal permissions — a
+  producer role that can only `SendMessage`, a consumer role that can only
+  `ReceiveMessage`/`DeleteMessage` — plus queue resource policies, encryption at
+  rest (SSE/KMS), and VPC-endpoint isolation. In-process there is *no* boundary:
+  anything in the process can enqueue or drain, and auth would have to be
+  enforced at the API edge (§3, where it isn't implemented).
+- **Managed observability & ops.** CloudWatch metrics (queue depth, age of the
+  oldest message), alarms, and a console for inspecting / purging / redriving the
+  DLQ — versus the hand-rolled `/metrics` and `/events/dlq` here.
+- **Decoupling via a network API.** Producers and consumers talk to a managed
+  endpoint, so they can be separate services, hosts, even languages — which is
+  what makes the independent scaling described in §8/§10 actually possible.
+
+Trade-off (named, not hidden): AWS coupling, per-request cost, IAM/network setup,
+and no first-class local run — you'd reach for ElasticMQ or LocalStack in dev.
