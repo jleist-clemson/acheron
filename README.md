@@ -236,3 +236,10 @@ same change. That loop is where most of the depth landed:
   document became queryable — a real (benign) consistency lag, since the counter
   ticks only when the worker's `bulk_write` coroutine resumes; the test now polls
   (surfaced once the integration suite ran in CI, §13).
+
+---
+
+## License
+
+Licensed under the Apache License, Version 2.0 — see [`LICENSE`](LICENSE).
+Copyright © 2026 Jonathan Leist.
