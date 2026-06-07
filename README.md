@@ -43,6 +43,22 @@ curl -s -X POST http://localhost:8000/events \
 curl 'http://localhost:8000/events?event_type=page_view' | jq
 ```
 
+### Seed sample data
+
+Populate the running stack with randomized events (varied event types, users, and
+metadata shapes) for manual testing:
+
+```bash
+./scripts/seed.sh            # 50 events → http://127.0.0.1:8000
+./scripts/seed.sh 200        # custom count
+COUNT=500 BASE_URL=http://localhost:8000 ./scripts/seed.sh
+```
+
+It health-checks the app first, then prints an accepted/failed summary plus a few
+verify commands (`/metrics`, `/events?with_total=true`, `/events/stats`). Events
+are processed asynchronously, so a freshly-seeded `/events/search` term may take
+a few seconds to appear while the outbox drains to Elasticsearch.
+
 ### Backing services only (while developing app code)
 
 ```bash
@@ -51,6 +67,19 @@ docker compose up mongodb elasticsearch redis
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
+
+### Teardown / cleanup
+
+```bash
+docker compose down        # stop & remove containers + network; keeps data volumes
+docker compose down -v     # also wipe the data volumes (Mongo/ES) — a clean slate
+```
+
+`down -v` removes all ingested/seeded data (the named `mongo_data` / `es_data`
+volumes), so use it to reset between runs or to fully clean up after evaluating.
+Nothing else needs tidying: the integration suite uses throwaway `testcontainers`
+that are torn down automatically, and `__pycache__` / `.pytest_cache` are
+git-ignored.
 
 ---
 
@@ -136,6 +165,15 @@ Elasticsearch pointed at a dead address — the graceful-degradation contract
 event downstream via the outbox/`EsIndexer` and asserts `/events/search` returns
 it — including a term that appears *only* in metadata — plus an index-mapping
 contract check (`metadata` `flattened`, `metadata_text` `text`).
+
+**Lint** — Google-style docstrings and import/style rules are enforced with Ruff:
+
+```bash
+ruff check .
+```
+
+All three (`ruff check`, `pytest`, `pytest -m integration`) run automatically in
+CI on every push/PR — see ARCHITECTURE.md §13.
 
 ---
 
