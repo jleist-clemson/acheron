@@ -141,12 +141,14 @@ contract check (`metadata` `flattened`, `metadata_text` `text`).
 
 ## AI in My Workflow
 
-This project was scaffolded and iterated with **Claude Code** (Anthropic). I used
-it less as a code generator and more as a design partner — to surface trade-offs,
-argue both sides of a decision, and stress-test the architecture against the
-assignment's constraints. The pattern throughout was: AI proposes an approach and
-names the trade-off; I push back against the requirements; we converge on a call
-that's then written into ARCHITECTURE.md so the reasoning is durable.
+This project was built with two AI coding tools: **Claude Code** (Anthropic) as
+the primary design-and-implementation partner, and a **Cursor** agent to codify
+the project conventions into rules (ARCHITECTURE.md §12). I used AI less as a code
+generator and more as a design partner — to surface trade-offs, argue both sides
+of a decision, and stress-test the architecture against the assignment's
+constraints. The pattern throughout was: AI proposes an approach and names the
+trade-off; I push back against the requirements; we converge on a call that's then
+written into ARCHITECTURE.md so the reasoning is durable.
 
 ### Design debates that shaped the code
 
@@ -184,6 +186,30 @@ that's then written into ARCHITECTURE.md so the reasoning is durable.
   in-process queue adds a "re-enqueue into a full queue" failure mode for no real
   gain. We kept in-place retry and fixed the doc — reconciling, not cargo-culting.
 
+### AI as a reviewer (iterative hardening)
+
+Past the first working slice, I leaned on AI for structured **review passes** —
+some run as an independent "another engineer's" critique — to find gaps, then
+turned each into a focused, test-backed commit with the docs reconciled in the
+same change. That loop is where most of the depth landed:
+
+- **Durable, replayable DLQ.** Review flagged that dead-lettered events lived only
+  in memory. We persisted them to a Mongo `dead_letter` collection with a
+  `GET /events/dlq` + replay path — and reasoned through the subtlety that a
+  dead-letter is *usually itself* a Mongo outage, so the persist can fail too
+  (hence an in-memory fallback that flushes on recovery).
+- **Idempotency-key conflict detection.** Reusing a key with a *different* body
+  used to silently drop the new payload; it now returns `409`. The catch that
+  shaped the code: fingerprint the request with `exclude_unset` so a
+  server-defaulted `timestamp` doesn't make an honest retry look like a conflict.
+- **Typed response models + a partial outbox index.** Review found the routes
+  returned untyped `dict`s (now Pydantic `response_model`s, with `/health` and
+  `/metrics` deliberately exempt) and that the outbox scan wasn't index-covered
+  (now a partial index over only the un-indexed tail).
+- **Hygiene pass — AI reviewing its own output.** It caught that the `.claude/`
+  rules were modeled on Cursor's mechanism and weren't actually being loaded, and
+  de-duplicated drifting copies of the integration-test helpers.
+
 ### Other human-driven calls
 
 - Scrutinized the **Prerequisites**: questioned the "Docker Desktop" requirement
@@ -194,6 +220,10 @@ that's then written into ARCHITECTURE.md so the reasoning is durable.
 - Repeatedly enforced **doc/code consistency**: every behavior change reconciled
   ARCHITECTURE.md and README in the same commit, so the design narrative never
   drifts from the implementation.
+- Re-interrogated the **in-process-queue constraint** instead of treating it as
+  immovable — confirmed it's mandated by the assignment, so the right move was to
+  document the real-SQS migration in depth (§14) rather than build a broker that
+  would break the constraint.
 
 ### Where AI caught things I'd have missed
 
@@ -202,3 +232,7 @@ that's then written into ARCHITECTURE.md so the reasoning is durable.
 - The `event_id`-as-MongoDB-`_id` pattern for idempotent retries.
 - `async_bulk`'s default `raise_on_error=True` silently dropping a whole ES batch
   on one bad document.
+- A flaky test that read the in-memory `events_processed` metric right after a
+  document became queryable — a real (benign) consistency lag, since the counter
+  ticks only when the worker's `bulk_write` coroutine resumes; the test now polls
+  (surfaced once the integration suite ran in CI, §13).
