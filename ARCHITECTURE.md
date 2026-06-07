@@ -394,13 +394,16 @@ are organized as:
   roles, the in-process-queue constraint, the docs-don't-drift rule). Cursor
   reads it natively; **`CLAUDE.md`** imports it via `@AGENTS.md` so Claude Code
   reads the same content.
-- **Path-scoped rules**, mirrored per tool so they load only when the matching
-  files are touched: `.cursor/rules/*.mdc` (Cursor, `globs:`) and
-  `.claude/rules/*.md` (Claude Code, `paths:`). Both cover the same five topics:
+- **Per-topic rule files**, mirrored per tool. Cursor's `.cursor/rules/*.mdc` are
+  glob-scoped (`globs:`) and load only when the matching files are touched; Claude
+  Code has no glob-scoped rules directory, so `.claude/rules/*.md` are imported
+  from `CLAUDE.md` (always loaded) and each names its scope in an "Applies to:"
+  line. Both cover the same five topics:
   - **python-standards** — Google docstrings, `from __future__ import annotations`,
     tunables in `Settings` rather than magic numbers.
   - **api-routes** — thin handlers, the error→status mapping (Mongo→503, ES→502,
-    queue full→429, shutdown→503), required response models.
+    queue full→429, shutdown→503), and typed response models on the events routes
+    (`/health` and `/metrics` exempt).
   - **testing** — pytest/asyncio conventions and the unit-vs-integration split.
   - **background-tasks** — the drain-vs-cancel `stop()` decision, interruptible
     idle, loop exception handling, and the lifespan shutdown ordering (§10).
