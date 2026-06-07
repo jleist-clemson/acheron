@@ -1,10 +1,10 @@
 # Architecture — Distributed Event Processing Platform (`acheron`)
 
-> **Status: v0.1 — living document.** This captures design intent ahead of
-> implementation. Sections marked _(TODO: confirm against implementation)_ will
-> be reconciled with the code as it lands. Decisions and their tradeoffs are
-> stated up front; where the assignment's in-process constraints force a
-> compromise, that compromise is named explicitly rather than hidden.
+> **Status: implemented — this document is kept in sync with the code.** Every
+> behavior change updates the relevant section here in the same commit. Decisions
+> and their tradeoffs are stated up front; where the assignment's in-process
+> constraints force a compromise, that compromise is named explicitly rather than
+> hidden.
 
 ---
 
@@ -192,11 +192,13 @@ notes.)_
   ES, rather than carrying the whole (low-selectivity, two-valued) collection;
   the compound shape covers both the `es_indexed` equality match and the
   `received_at` sort (ESR), so the scan is never an in-memory sort.
-- _(TODO: confirm against implementation)_ possibly **`{ source_url: 1 }`** if
-  source filtering proves hot; otherwise left off.
 
 **Deliberately omitted (Mongo):**
 
+- **No index on `source_url`.** `/events` and `/events/search` accept it as a
+  filter, but it backs neither the default listing nor `/stats`, so it's left
+  unindexed until it proves hot — consistent with the low-index-count principle
+  below.
 - **No index on `metadata.*` subfields.** Metadata is high-cardinality,
   schemaless, and primarily queried by *text* — that's ES's job. Indexing it in
   Mongo would tax every write for queries we route elsewhere.
