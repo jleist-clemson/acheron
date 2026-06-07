@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class DeadLetterSink(Protocol):
-    """Durable backing store the DLQ persists exhausted events to."""
+    """Durable backing store where the DLQ persists exhausted events."""
 
     async def persist_dead_letters(self, docs: list[dict[str, Any]]) -> None:
         """Store dead-letter records durably."""
