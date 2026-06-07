@@ -375,6 +375,22 @@ is the whole point.
   *not* persist and replay the original response: ingest stays non-blocking (§3),
   so a matching retry is re-driven through the pipeline (deduped at the Mongo
   write) rather than served from a stored result.
+- **A more robust CI/CD pipeline.** A baseline CI exists (§13: lint + unit +
+  integration on every push/PR), but a team-grade pipeline would go further:
+  branch protection with required status checks, a build-and-publish step that
+  pushes a versioned, vulnerability-scanned container image to a registry,
+  dependency/image scanning (e.g. `pip-audit`, Dependabot, Trivy), a coverage
+  gate, and — the real missing half — **CD** that promotes a green build through
+  staging → production instead of stopping at "tests pass."
+- **Run it somewhere real (off the workstation).** Today the system only runs
+  locally via `docker compose`; §10 describes the target topology but nothing
+  actually executes it. The crucial next step is standing it up on hosted infra
+  (e.g. AWS): the app image on ECS/Fargate or EKS with **separate API and worker
+  services** (§14), the queue on **SQS**, and the stateful stores on managed
+  offerings (DocumentDB/Atlas, Elastic Cloud or OpenSearch, ElastiCache) — all
+  provisioned as code (Terraform/CDK), secrets in a managed store, and the CD
+  pipeline above deploying into it. Until it runs off a single machine, the
+  durability and scaling claims in §8/§10 are *designed but unproven*.
 
 ---
 
