@@ -1,0 +1,8 @@
+# Code owners for acheron.
+# https://docs.github.com/articles/about-code-owners
+#
+# The last matching pattern wins. This single catch-all makes @jleist-clemson
+# the sole owner of every path in the repository, so any pull request requests
+# their review automatically.
+
+* @jleist-clemson
