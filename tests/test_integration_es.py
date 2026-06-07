@@ -10,10 +10,7 @@ Opt-in and heavyweight (ES startup): requires Docker. Run with
 """
 from __future__ import annotations
 
-import asyncio
-import json
 import os
-import subprocess
 import sys
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -30,29 +27,18 @@ from testcontainers.elasticsearch import ElasticSearchContainer  # noqa: E402
 from testcontainers.mongodb import MongoDbContainer  # noqa: E402
 from testcontainers.redis import RedisContainer  # noqa: E402
 
+from tests.integration_utils import ensure_docker_host, poll_until  # noqa: E402
+
 pytestmark = pytest.mark.integration
 
 _ES_IMAGE = "docker.elastic.co/elasticsearch/elasticsearch:8.13.4"
-
-
-def _ensure_docker_host() -> None:
-    """Point the Docker SDK at the active socket if DOCKER_HOST isn't set."""
-    if os.environ.get("DOCKER_HOST") or os.path.exists("/var/run/docker.sock"):
-        return
-    try:
-        out = subprocess.check_output(
-            ["docker", "context", "inspect"], text=True, stderr=subprocess.DEVNULL
-        )
-        os.environ["DOCKER_HOST"] = json.loads(out)[0]["Endpoints"]["docker"]["Host"]
-    except Exception:
-        pass
 
 
 @pytest.fixture(scope="module")
 def _stores_with_es() -> Iterator[None]:
     """Start Mongo + Redis + real Elasticsearch and point the app at them."""
     os.environ["TESTCONTAINERS_RYUK_DISABLED"] = "true"
-    _ensure_docker_host()
+    ensure_docker_host()
     try:
         mongo = MongoDbContainer("mongo:7.0")
         redis = RedisContainer("redis:7-alpine")
@@ -103,19 +89,6 @@ async def es_client(_stores_with_es: None) -> AsyncIterator[httpx.AsyncClient]:
             yield c
 
 
-async def _search_until(client, params, predicate, timeout=20.0):
-    """Poll /events/search until predicate holds or timeout; return last json."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    data: dict = {}
-    while loop.time() < deadline:
-        data = (await client.get("/events/search", params=params)).json()
-        if predicate(data):
-            return data
-        await asyncio.sleep(0.2)
-    return data
-
-
 async def test_outbox_indexes_to_es_and_metadata_is_searchable(
     es_client: httpx.AsyncClient,
 ) -> None:
@@ -135,11 +108,15 @@ async def test_outbox_indexes_to_es_and_metadata_is_searchable(
 
     # The worker writes Mongo; the EsIndexer drains the outbox to ES. Poll until
     # the event is searchable (proves the whole downstream-of-Mongo pipeline).
-    by_type = await _search_until(es_client, {"event_type": et}, lambda d: d["total"] >= 1)
+    by_type = await poll_until(
+        es_client, "/events/search", {"event_type": et}, lambda d: d["total"] >= 1, timeout=20.0
+    )
     assert by_type["total"] == 1
 
     # Full-text ?q= must match a term present only in metadata (item #1).
-    by_meta = await _search_until(es_client, {"q": term}, lambda d: d["total"] >= 1)
+    by_meta = await poll_until(
+        es_client, "/events/search", {"q": term}, lambda d: d["total"] >= 1, timeout=20.0
+    )
     assert by_meta["total"] == 1
     hit = by_meta["hits"][0]
     assert hit["event_type"] == et

@@ -12,7 +12,6 @@ Opt-in: requires Docker. Run with ``pytest -m integration``.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 import uuid
@@ -29,36 +28,16 @@ from asgi_lifespan import LifespanManager  # noqa: E402
 from testcontainers.mongodb import MongoDbContainer  # noqa: E402
 from testcontainers.redis import RedisContainer  # noqa: E402
 
+from tests.integration_utils import ensure_docker_host, poll_until  # noqa: E402
+
 pytestmark = pytest.mark.integration
-
-
-def _ensure_docker_host() -> None:
-    """Point the Docker SDK at the active socket if DOCKER_HOST isn't already set.
-
-    The Python Docker SDK only honors ``DOCKER_HOST`` (it ignores docker CLI
-    contexts), so on Rancher Desktop / Colima — where the socket isn't at the
-    default ``/var/run/docker.sock`` — testcontainers can't find Docker. Derive
-    the endpoint from the active context as a fallback.
-    """
-    if os.environ.get("DOCKER_HOST") or os.path.exists("/var/run/docker.sock"):
-        return
-    try:
-        import json
-        import subprocess
-
-        out = subprocess.check_output(
-            ["docker", "context", "inspect"], text=True, stderr=subprocess.DEVNULL
-        )
-        os.environ["DOCKER_HOST"] = json.loads(out)[0]["Endpoints"]["docker"]["Host"]
-    except Exception:
-        pass  # leave unset; container startup will fail and the test will skip
 
 
 @pytest.fixture(scope="module")
 def _stores() -> Iterator[None]:
     """Start ephemeral Mongo + Redis and point the app's env at them (ES = dead)."""
     os.environ["TESTCONTAINERS_RYUK_DISABLED"] = "true"  # avoid pulling the reaper image
-    _ensure_docker_host()
+    ensure_docker_host()
     try:
         mongo = MongoDbContainer("mongo:7.0")
         redis = RedisContainer("redis:7-alpine")
@@ -105,19 +84,6 @@ async def client(_stores: None) -> AsyncIterator[httpx.AsyncClient]:
             yield c
 
 
-async def _poll(client, path, params, predicate, timeout=5.0):
-    """Poll a GET endpoint until predicate(json) holds or timeout; return last json."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    data: dict = {}
-    while loop.time() < deadline:
-        data = (await client.get(path, params=params)).json()
-        if predicate(data):
-            return data
-        await asyncio.sleep(0.05)
-    return data
-
-
 async def test_ingest_then_read_round_trip(client: httpx.AsyncClient) -> None:
     et = f"itest_{uuid.uuid4().hex[:8]}"
     resp = await client.post(
@@ -133,7 +99,7 @@ async def test_ingest_then_read_round_trip(client: httpx.AsyncClient) -> None:
     event_id = resp.json()["event_id"]
     assert event_id
 
-    data = await _poll(
+    data = await poll_until(
         client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1
     )
     assert len(data["events"]) == 1
@@ -159,7 +125,7 @@ async def test_idempotency_key_dedupes_duplicate_submissions(
     assert r1.json()["event_id"] == r2.json()["event_id"]
 
     # After the worker flushes, the duplicate collapses to exactly one document.
-    data = await _poll(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
+    data = await poll_until(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
     assert len(data["events"]) == 1
 
 
@@ -192,7 +158,7 @@ async def test_filters_and_pagination(client: httpx.AsyncClient) -> None:
             json={"event_type": et, "user_id": uid, "source_url": "https://t.test"},
         )
 
-    data = await _poll(
+    data = await poll_until(
         client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 3
     )
     assert len(data["events"]) == 3
@@ -222,19 +188,15 @@ async def test_stats_aggregation(client: httpx.AsyncClient) -> None:
             "/events", json={"event_type": b, "user_id": "x", "source_url": "https://t.test"}
         )
 
-    await _poll(client, "/events", {}, lambda d: len(d["events"]) >= 5)
+    await poll_until(client, "/events", {}, lambda d: len(d["events"]) >= 5)
 
     # The rollup refreshes on an interval (1s in tests); poll until the
     # precomputed /stats reflects the just-ingested events.
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + 10
-    stats: dict = {}
-    while loop.time() < deadline:
-        stats = (await client.get("/events/stats")).json()
-        counts = {row["event_type"]: row["count"] for row in stats["data"]}
-        if stats.get("source") == "rollup" and counts.get(a) == 3 and counts.get(b) == 2:
-            break
-        await asyncio.sleep(0.1)
+    def _rollup_ready(s: dict) -> bool:
+        counts = {row["event_type"]: row["count"] for row in s["data"]}
+        return s.get("source") == "rollup" and counts.get(a) == 3 and counts.get(b) == 2
+
+    stats = await poll_until(client, "/events/stats", {}, _rollup_ready, timeout=10.0)
     counts = {row["event_type"]: row["count"] for row in stats["data"]}
     assert stats["source"] == "rollup"  # served from the precomputed rollup
     assert counts.get(a) == 3
@@ -260,7 +222,7 @@ async def test_realtime_stats_cache_miss_then_hit(client: httpx.AsyncClient) -> 
     await client.post(
         "/events", json={"event_type": et, "user_id": "x", "source_url": "https://t.test"}
     )
-    await _poll(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
+    await poll_until(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
 
     first = (await client.get("/events/stats/realtime")).json()
     second = (await client.get("/events/stats/realtime")).json()
@@ -274,12 +236,12 @@ async def test_metrics_endpoint_reports_pipeline_state(client: httpx.AsyncClient
     await client.post(
         "/events", json={"event_type": et, "user_id": "x", "source_url": "https://t.test"}
     )
-    await _poll(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
+    await poll_until(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
 
     # The worker's events_processed counter updates when its bulk_write coroutine
     # resumes, which lags Mongo's commit (the doc is queryable above slightly
     # before the counter ticks). Poll the metric rather than reading it once.
-    m = await _poll(
+    m = await poll_until(
         client,
         "/metrics",
         {},
@@ -359,7 +321,7 @@ async def test_dlq_persist_list_and_replay(client: httpx.AsyncClient) -> None:
     assert replay.status_code == 200
     assert replay.json() == {"event_id": event_id, "status": "replayed"}
 
-    data = await _poll(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
+    data = await poll_until(client, "/events", {"event_type": et}, lambda d: len(d["events"]) >= 1)
     assert data["events"][0]["event_id"] == event_id
 
     after = (await client.get("/events/dlq")).json()
