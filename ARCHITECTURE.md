@@ -166,8 +166,8 @@ workers `get()`, process a batch, and `task_done()`.
 what gives at-least-once its teeth). Visibility timeout and redelivery replace
 our in-process retry; a configured redrive policy replaces the hand-rolled DLQ.
 The worker
-becomes a separate, independently scalable process. _(See bonus: AWS SQS drop-in
-notes.)_
+becomes a separate, independently scalable process. _(Expanded in §14: AWS SQS
+drop-in design notes.)_
 
 ---
 
@@ -434,3 +434,57 @@ assertion that read the in-memory `events_processed` metric immediately after a
 document became queryable in Mongo — a real (benign) consistency lag, since the
 counter ticks only when the worker's `bulk_write` coroutine resumes (§5). The
 test now polls the metric rather than asserting once.
+
+---
+
+## 14. AWS SQS drop-in design notes (bonus)
+
+The in-process `asyncio.Queue` is a deliberate stand-in — the assignment asks for
+a *simulated* queue, and §5/§7/§10 already trace why an in-process queue is the
+single largest risk in the design. This section is the migration it stands in for:
+what a real SQS drop-in changes, and — just as important — what it *doesn't*,
+because several choices here were made so the swap stays small.
+
+**The swap is localized by design.** Producers touch the queue only through
+`IngestionService` (`put_nowait`) and consumers only through `WorkerPool`'s
+`get()` loop, both behind the thin `EventQueue` wrapper. So the drop-in is:
+
+- **API:** `put_nowait(event)` → `SendMessage` (or `SendMessageBatch`, up to 10).
+- **Worker:** `get()` → long-poll `ReceiveMessage`; on success `DeleteMessage`
+  (delete-on-ack); the worker becomes a **separate process/deployment** (§10).
+
+Everything downstream of Mongo — the outbox, `EsIndexer`, rollups, all reads — is
+untouched.
+
+**Mechanism by mechanism:**
+
+| Concern | Today (in-process) | Real SQS | Net change |
+|---|---|---|---|
+| Delivery / ack | process a batch in memory; lost if the process dies | `ReceiveMessage` → process → `DeleteMessage` only on success | delete-on-ack is what makes it at-least-once *across restarts* |
+| Failure retry | in-place backoff+jitter; the worker is occupied during its own backoff | don't delete → the **visibility timeout** lapses → redelivered to any consumer | delete our retry loop; set visibility timeout ≈ p99 processing time |
+| Crash mid-batch | in-flight events lost (§7) | unacked messages reappear after the visibility timeout | **closes the §7 worker-crash gap entirely** |
+| DLQ | hand-rolled, persisted to Mongo, replayable via `/events/dlq` | **redrive policy**: after `maxReceiveCount`, SQS moves the message to a DLQ queue | swap our DLQ for the native one; "replay" becomes a DLQ→source redrive |
+| Backpressure | bounded queue → `429`/`503` on full | effectively unbounded; message retention (≤ 14 d) is the real bound | the `429`-on-full path goes away; backpressure becomes consumer autoscaling + producer rate limiting |
+| Scaling signal | one process's CPU/memory | queue depth (`ApproximateNumberOfMessagesVisible`) | API and worker scale on different signals → separate deployments (§8/§10) |
+| Duplicates | none within a run | at-least-once → occasional redelivery | **no code change**: `event_id`→Mongo `_id` already makes writes idempotent (§5) |
+| Ordering | unordered (concurrent workers) | Standard: unordered (same); FIFO: ordered per `MessageGroupId` + dedup id, but ~300 msg/s per group | stay on Standard unless per-key ordering is required |
+
+**The migration mostly *removes* code.** Out go the in-place retry/backoff loop
+(the visibility timeout owns redelivery), the bounded-queue `429` path, the
+in-memory DLQ fallback buffer, and most of the graceful-drain-on-shutdown logic
+(unacked messages simply redeliver). What's added is small: an SQS adapter behind
+`EventQueue`, a `DeleteMessage`-on-success step, and queue-URL/region config.
+
+**Why the choices here make the swap safe.** SQS's at-least-once delivery is only
+safe if writes are idempotent — which they already are (deterministic `event_id`
+as the Mongo `_id`, plus the `Idempotency-Key` path), so redelivered duplicates
+collapse to a no-op insert. And keeping ES strictly downstream of Mongo via the
+outbox means redeliveries can't double-index or diverge the stores. The biggest
+risk in the current design (durability tied to one process) is exactly what this
+swap removes, and the rest of the architecture was built to absorb it unchanged.
+
+**Standard vs FIFO.** Standard SQS matches today's semantics (unordered,
+at-least-once) and scales nearly unbounded — the right default. FIFO buys
+per-`MessageGroupId` ordering and content-based dedup but caps throughput
+(~300 msg/s, 3000 batched) per group; only worth it if a consumer needs strict
+per-user (or per-key) ordering, which this workload doesn't.
